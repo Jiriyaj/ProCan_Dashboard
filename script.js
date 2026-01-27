@@ -81,7 +81,7 @@ let state = {
 // ==============================
 // Supabase setup
 // ==============================
-let supabase = null;
+
 function supabaseReady() {
     const url = String(window.SUPABASE_URL || '');
     const key = String(window.SUPABASE_ANON_KEY || '');
