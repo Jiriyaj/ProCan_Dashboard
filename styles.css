@@ -72,8 +72,8 @@ html, body {
   overflow-y: auto;
 }
 
-.content-wrapper{
-  opacity: 0;
+\.content-wrapper{
+  opacity: 1;
   transition: opacity .35s ease;
 }
 
@@ -449,3 +449,61 @@ html, body{
   overflow-x: hidden !important;
   overflow-y: auto !important;
 }
+
+
+
+/* =========================
+   Responsive (tablet / iPad)
+   ========================= */
+@media (max-width: 1100px){
+  .page-wrap{ padding: 16px; }
+  .topbar{ padding: 14px 16px 0 16px; }
+  .container{
+    grid-template-columns: 1fr;
+  }
+  .card{ padding: 20px; }
+  .topbar-title{ font-size: 20px; }
+  .topbar-sub{ font-size: 12px; }
+  .form-row{ flex-direction: column; }
+  .form-row > *{ width: 100%; }
+  .dashboard-header-right{ flex-wrap: wrap; justify-content: flex-end; }
+}
+@media (max-width: 520px){
+  .page-wrap{ padding: 12px; }
+  .card{ padding: 16px; border-radius: 14px; }
+}
+
+
+
+/* iOS Safari: prevent scroll lock / allow full-height content */
+@supports (-webkit-touch-callout: none){
+  html, body{
+    height: auto !important;
+    min-height: 100% !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .page-wrap, .content-wrapper{
+    height: auto !important;
+    min-height: 0 !important;
+  }
+}
+
+
+
+/* Tables: prevent cropping on smaller widths */
+.table-wrap{
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.sales-table{
+  min-width: 640px;
+}
+@media (max-width: 1100px){
+  .sales-table{ min-width: 720px; }
+}
+
+
+/* Small polish */
+.card{ backdrop-filter: blur(8px); }
+input, select{ max-width: 100%; }
