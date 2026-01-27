@@ -384,4 +384,28 @@ button:active{ transform: translateY(0px); opacity: .95; }
 .startup-overlay {
   transition: opacity 0.3s ease;
 }
-  
+
+/* --- HOTFIX: prevent dashboard clipping / allow full scroll --- */
+html, body {
+  height: auto !important;
+  min-height: 100%;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+}
+
+#app, .app, .dashboard, .page, .container {
+  height: auto !important;
+  min-height: 100vh;
+  overflow: visible !important;
+}
+
+/* If you have a main wrapper using 100vh, this prevents cut-off */
+main, .main, .content, .layout {
+  height: auto !important;
+  min-height: 100vh;
+}
+
+/* If a two-column layout is forcing a giant empty right column, this prevents it from stealing space */
+.grid, .split, .two-col, .layout-grid {
+  grid-template-columns: 1fr !important;
+}
