@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ProCan J.A.I.D.A — Ops & Payout Tracker</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- Startup Sequence -->
+  <div class="startup-overlay" id="startupOverlay" aria-hidden="true" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10000;">
+    <div class="startup-logo">ProCan J.A.I.D.A</div>
+    <div class="startup-text">J.A.I.D.A, initializing ops console…</div>
+    <div class="startup-spinner" aria-hidden="true"></div>
+  </div>
+
+  <div class="content-wrapper" id="contentWrapper">
+    <div class="container">
+
+      <!-- AUTH GATE -->
+      <div class="auth-gate" id="authGate" style="display:none;">
+        <div class="card auth-card">
+          <div class="card-header">
+            <h2>Secure Login</h2>
+            <span class="tier-badge tier-1">Supabase Auth</span>
+          </div>
+
+          <div class="form-group">
+            <label for="authEmail">Email</label>
+            <input id="authEmail" type="email" placeholder="you@procan.com" autocomplete="email" />
+          </div>
+
+          <div class="form-group">
+            <label for="authPassword">Password</label>
+            <input id="authPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
+          </div>
+
+          <div class="form-row">
+            <button class="btn-primary" type="button" id="btnLogin">Login</button>
+            <button class="btn-secondary" type="button" id="btnSignup">Create Account</button>
+          </div>
+
+          <div style="margin-top:12px;font-size:12px;opacity:.8;line-height:1.4;">
+            Tip: create your first admin account, then keep this dashboard private.
+          </div>
+
+          <div id="authMsg" class="empty-state" style="margin-top:14px;display:none;"></div>
+        </div>
+      </div>
+
+      <!-- APP -->
+      <div id="appShell" style="display:none; width:100%;">
+        <div class="topbar">
+          <div class="topbar-left">
+            <div class="topbar-title">ProCan J.A.I.D.A</div>
+            <div class="topbar-sub">Ops • Operators • Payouts</div>
+          </div>
+          <div class="topbar-right">
+            <div class="pill" id="whoamiPill">Signed in</div>
+            <button class="btn-secondary btn-small" id="btnLogout" type="button">Logout</button>
+          </div>
+        </div>
+
+        <div class="container">
+          <!-- Left column -->
+          <div class="left">
+            <div id="alertContainer"></div>
+
+            <div class="card">
+              <div class="card-header">
+                <h2>Log Completed Job</h2>
+                <span class="tier-badge tier-2">Revenue auto-calculated</span>
+              </div>
+
+              <form id="saleForm">
+                <div class="form-group">
+                  <label for="customerName">Account / Customer</label>
+                  <input id="customerName" type="text" placeholder="e.g., Joe’s BBQ - Downtown" required />
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="saleDate">Service Date</label>
+                    <input id="saleDate" type="date" required />
+                  </div>
+                  <div class="form-group">
+                    <label for="saleRep">Operator</label>
+                    <select id="saleRep" required></select>
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="productLine">Service Type</label>
+                    <select id="productLine" required>
+                      <option value="">Select service...</option>
+                      <option>Trash Can Cleaning - Biweekly</option>
+                      <option>Trash Can Cleaning - Monthly</option>
+                      <option>Dumpster Pad Cleaning - Weekly</option>
+                      <option>Dumpster Pad Cleaning - Biweekly</option>
+                      <option>Dumpster Pad Cleaning - Monthly</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="units">Quantity</label>
+                    <input id="units" type="number" min="1" step="1" value="1" required />
+                    <div style="margin-top:6px; font-size:12px; opacity:.75;">
+                      For pad cleaning, quantity isn’t used for pricing (still logs a number for your notes).
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="billingFrequency">Client Billing</label>
+                    <select id="billingFrequency">
+                      <option value="monthly">Monthly</option>
+                      <option value="quarterly">Quarterly (5% off)</option>
+                      <option value="annual">Annual (10% off, $1k+/mo)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="locationsCount"># of Locations</label>
+                    <input id="locationsCount" type="number" min="1" step="1" value="1" />
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="jobType">Job Type</label>
+                    <select id="jobType">
+                      <option value="recurring">Recurring (subscription)</option>
+                      <option value="oneTime">One-time Service</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Operator Payout Status</label>
+                    <div class="toggle-group">
+                      <button type="button" class="toggle-btn active" data-value="due">Due</button>
+                      <button type="button" class="toggle-btn" data-value="paid">Paid Out</button>
+                      <button type="button" class="toggle-btn" data-value="cancelled">Cancelled</button>
+                    </div>
+                    <input type="hidden" id="activationStatus" value="due" />
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="revenue">Visit Revenue (auto)</label>
+                    <input id="revenue" type="number" step="0.01" placeholder="Auto-calculated" readonly />
+                  </div>
+                  <div class="form-group">
+                    <label for="fees">Costs (optional)</label>
+                    <input id="fees" type="number" step="0.01" placeholder="Chemicals, fuel, etc." />
+                  </div>
+                </div>
+
+                <div class="card" style="margin: 0 0 18px 0; padding: 14px;">
+                  <div style="display:flex; gap:10px; align-items:center;">
+                    <input id="deepClean" type="checkbox" style="width:auto;" />
+                    <label for="deepClean" style="margin:0;">One-time Initial Deep Clean (first service only)</label>
+                  </div>
+                  <div class="form-row" style="margin-top:12px;">
+                    <div class="form-group" style="margin-bottom:0;">
+                      <label for="deepCleanCondition">Can Condition</label>
+                      <select id="deepCleanCondition">
+                        <option value="standard">Standard ($35/can)</option>
+                        <option value="heavy">Heavy ($50/can)</option>
+                        <option value="extreme">Extreme ($75/can)</option>
+                      </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom:0;">
+                      <label>Included with service</label>
+                      <div style="font-size:12px; opacity:.8; padding-top:10px;">
+                        Deodorizer is included by default. No other add-ons.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label>Pricing Breakdown</label>
+                  <div id="pricingPreview" style="padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: rgba(0,0,0,0.22);"></div>
+                </div>
+
+                <div class="form-group">
+                  <label for="notes">Notes (optional)</label>
+                  <input id="notes" type="text" placeholder="Gate code, special instructions, etc." />
+                </div>
+
+                <button type="submit" class="btn-primary">Add Job</button>
+              </form>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h2>Operators</h2>
+                <button class="btn-secondary" type="button" onclick="toggleRepForm()">Add / Edit</button>
+              </div>
+
+              <div id="repForm" style="display:none;">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="repName">Operator Name</label>
+                    <input id="repName" type="text" placeholder="e.g., Chris" />
+                  </div>
+                  <div class="form-group">
+                    <label for="repChurn">Payout %</label>
+                    <input id="repChurn" type="number" min="0" max="100" step="0.1" placeholder="30" />
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label style="display:flex;gap:10px;align-items:center;">
+                    <input id="repIsManager" type="checkbox" style="width:auto;">
+                    <span>Lead / Supervisor</span>
+                  </label>
+                </div>
+                <div class="form-row">
+                  <button class="btn-primary" type="button" onclick="addRep()">Save Operator</button>
+                  <button class="btn-secondary" type="button" onclick="toggleRepForm()">Close</button>
+                </div>
+              </div>
+
+              <div id="repsList"></div>
+            </div>
+          </div>
+
+          <!-- Right column -->
+          <div class="right">
+            <div class="card">
+              <div class="card-header">
+                <h2>Dashboard</h2>
+                <div class="dashboard-header-right">
+                  <div style="font-size:12px; opacity:.75;">Biweekly operator pay periods end on Friday</div>
+                  <button id="wipeBtn" class="btn-secondary btn-small stealth-wipe" type="button" title="(Local only) Clear UI cache" onclick="clearLocalUiCache()">Wipe</button>
+                </div>
+              </div>
+
+              <div class="summary-grid">
+                <div class="summary-card" id="totalGrossCard">
+                  <div class="summary-label" id="totalGrossLabel">Total Gross</div>
+                  <div class="summary-value" id="totalSales">$0.00</div>
+                </div>
+                <div class="summary-card" id="periodCard">
+                  <div class="summary-label" id="periodLabel">This Pay Period Profit</div>
+                  <div class="summary-value" id="weekSales">$0.00</div>
+                </div>
+                <div class="summary-card">
+                  <div class="summary-label">Total Jobs</div>
+                  <div class="summary-value" id="totalCommission">0</div>
+                </div>
+                <div class="summary-card">
+                  <div class="summary-label">Total Payouts</div>
+                  <div class="summary-value" id="weekCommission">$0.00</div>
+                </div>
+              </div>
+
+              <div class="tabs" style="margin-top: 18px;">
+                <button class="tab active" onclick="switchTab('all')">All Jobs</button>
+                <button class="tab" onclick="switchTab('byRep')">By Operator</button>
+                <button class="tab" onclick="switchTab('weekly')">This Pay Period</button>
+                <button class="tab" onclick="switchTab('payments')">Payouts</button>
+                <button class="tab" onclick="switchTab('insights')">Insights</button>
+                <button class="tab" onclick="switchTab('orders')">Orders</button>
+                <button class="tab" onclick="switchTab('routes')">Routes</button>
+              </div>
+
+              <div class="tab-content active" id="allTab">
+                <div id="salesTable"></div>
+              </div>
+
+              <div class="tab-content" id="byRepTab">
+                <div id="repBreakdown"></div>
+              </div>
+              
+              <div class="tab-content" id="ordersTab">
+                <div id="ordersPanel"></div>
+              </div>
+              
+              <div class="tab-content" id="routesTab">
+                <div id="routesPanel"></div>
+              </div>              
+
+              <div class="tab-content" id="weeklyTab">
+                <div id="weeklyBreakdown"></div>
+              </div>
+
+              <div class="tab-content" id="paymentsTab">
+                <div id="paymentsPanel"></div>
+              </div>
+
+              <div class="tab-content" id="insightsTab">
+                <div id="insightsPanel"></div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div> <!-- /appShell -->
+    </div>
+  </div>
+
+  <!-- Supabase JS -->
+  <script src="./supabase-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./script.js"></script>
+</body>
+</html>
