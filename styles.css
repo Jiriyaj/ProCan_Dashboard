@@ -11,6 +11,15 @@
 }
 
 
+
+/* Outer page wrapper (non-grid). Avoids nested .container grid conflicts */
+.page-wrap{
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 24px;
+  width: 100%;
+}
+
 /* Layout sanity: prevent padding from causing horizontal overflow */
 *, *::before, *::after { box-sizing: border-box; }
 /* --- Layout stability fixes (laptop + iPad) --- */
@@ -110,15 +119,13 @@ html, body {
 }
 
 .container {
-  max-width: 1600px;
-  margin: 0 auto;
-  padding: 24px;
+  width: 100%;
   display: grid;
-  grid-template-columns: minmax(420px, 480px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 520px) minmax(0, 1fr);
   gap: 24px;
-  min-height: 100vh;
+  align-items: start;
+}
 
-  }
 
 .left, .right{ min-width: 0; }
 
@@ -429,3 +436,16 @@ button:active{ transform: translateY(0px); opacity: .95; }
   transition: opacity 0.3s ease;
 }
   
+
+/* iOS/iPad scroll + safe area padding */
+.content-wrapper{
+  min-height: 100dvh;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom));
+}
+
+
+/* Hard guard: never lock page scrolling */
+html, body{
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
