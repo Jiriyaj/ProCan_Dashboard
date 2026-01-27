@@ -984,8 +984,11 @@ function renderEverything() {
 async function boot() {
   // Local first so UI has something even if supabase isn't ready.
   loadStateLocal();
-
-  // Set defaults / bind local UI
+  await initSupabase();
+  await loadSession();
+  setupEventListeners();
+  renderEverything();
+  hideStartupOverlay();
   setDefaultDate();
   setupStatusToggle();
   setupAutoPricing();
@@ -1051,3 +1054,12 @@ if (document.readyState === 'loading') {
 } else {
   boot();
 }
+
+function hideStartupOverlay() {
+    const overlay = document.getElementById('startupOverlay');
+    if (!overlay) return;
+    overlay.style.opacity = '0';
+    overlay.style.pointerEvents = 'none';
+    setTimeout(() => overlay.remove(), 300);
+  }
+  

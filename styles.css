@@ -377,4 +377,7 @@
       grid-template-columns: 1fr;
     }
   }
-  
+  .startup-overlay {
+    transition: opacity 0.3s ease;
+  }
+    
