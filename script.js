@@ -982,66 +982,73 @@ function renderEverything() {
 // Init + event bindings
 // ==============================
 async function boot() {
-  // Local first so UI has something even if supabase isn't ready.
-  loadStateLocal();
-  await initSupabase();
-  await loadSession();
-  setupEventListeners();
-  renderEverything();
-  hideStartupOverlay();
-  setDefaultDate();
-  setupStatusToggle();
-  setupAutoPricing();
+  try {
+    // Local first so UI has something even if Supabase isn't ready.
+    loadStateLocal();
 
-  // Bind your “Log Completed Job” form
-  const saleForm = document.getElementById('saleForm');
-  if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
+    // UI/setup that should work in both local + Supabase modes
+    setDefaultDate();
+    setupStatusToggle();
+    setupAutoPricing();
 
-  // Bind operator add form (if you have one)
-  // (You already expose addRep() on window; this just makes Enter work if you have a form wrapper.)
-  const repForm = document.getElementById('repForm');
-  if (repForm) {
-    repForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      await addRep();
-    });
-  }
+    // Bind your “Log Completed Job” form
+    const saleForm = document.getElementById('saleForm');
+    if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
 
-  // Try Supabase
-  initSupabase();
-
-  // If supabase is configured, require auth and then sync.
-  // If not configured, we run in local mode.
-  if (supabase) {
-    ensureAuthOverlay();
-
-    // Live auth changes (login/logout)
-    try {
-      supabase.auth.onAuthStateChange(async (_event, _session) => {
-        const ok = await requireAuth();
-        if (!ok) return;
-        await syncFromSupabase();
-        saveStateLocal(); // keep local backup copy
-        renderEverything();
+    // Bind operator add form (if you have one)
+    const repForm = document.getElementById('repForm');
+    if (repForm) {
+      repForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await addRep();
       });
-    } catch (e) {
-      console.warn('Auth listener error:', e);
     }
 
-    const ok = await requireAuth();
-    if (ok) {
-      await syncFromSupabase();
-      saveStateLocal();
+    // Try Supabase (if configured)
+    initSupabase();
+
+    // If supabase is configured, require auth and then sync.
+    // If not configured, we run in local mode.
+    if (supabase) {
+      ensureAuthOverlay();
+
+      // Live auth changes (login/logout)
+      try {
+        supabase.auth.onAuthStateChange(async (_event, _session) => {
+          const ok = await requireAuth();
+          if (!ok) return;
+          await syncFromSupabase();
+          saveStateLocal(); // keep local backup copy
+          renderEverything();
+        });
+      } catch (e) {
+        console.warn('Auth listener error:', e);
+      }
+
+      const ok = await requireAuth();
+      if (ok) {
+        await syncFromSupabase();
+        saveStateLocal();
+      }
     }
-  }
 
-  // First render
-  renderEverything();
+    // First render
+    renderEverything();
 
-  // Default tab behavior: keep your existing default if you already do it.
-  // Otherwise, show "all" by default.
-  if (typeof window.switchTab === 'function') {
-    try { window.switchTab('all'); } catch (e) {}
+    // Default tab behavior
+    if (typeof window.switchTab === 'function') {
+      try { window.switchTab('all'); } catch (e) {}
+    }
+  } catch (err) {
+    console.error('BOOT ERROR:', err);
+    try {
+      if (typeof showAlert === 'function') {
+        showAlert(`Boot error: ${err?.message || err}`, 'error');
+      }
+    } catch (_) {}
+  } finally {
+    // ALWAYS remove the startup overlay, even if boot crashes.
+    hideStartupOverlay();
   }
 }
 
