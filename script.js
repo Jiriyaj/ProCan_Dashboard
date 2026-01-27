@@ -265,6 +265,47 @@ function bindAuthGate() {
   });
 }
 
+// Bind logout button (top-right). Safe to call multiple times.
+function bindLogout() {
+  const btn = document.getElementById('btnLogout');
+  if (!btn) return;
+  if (btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+
+  btn.addEventListener('click', async () => {
+    try {
+      // Local-only mode (no Supabase)
+      if (!supabaseClient) {
+        showAlert('No Supabase session to sign out of.', 'error');
+        hideAppShell();
+        showAuthGate();
+        return;
+      }
+
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = 'Logging out…';
+
+      const { error } = await supabaseClient.auth.signOut();
+      if (error) throw error;
+
+      // Immediately reset UI (don’t rely only on onAuthStateChange timing)
+      hideAppShell();
+      showAuthGate();
+      setAuthMsg('Logged out.', 'info');
+    } catch (e) {
+      console.error('Logout failed:', e);
+      showAlert(`Logout failed: ${e?.message || 'Unknown error'}`, 'error');
+    } finally {
+      try {
+        btn.disabled = false;
+        btn.textContent = 'Logout';
+      } catch (_) {}
+    }
+  });
+}
+
+
 function ensureAuthOverlay() { /* legacy no-op: using #authGate */ }
 
 async function requireAuth() {
@@ -276,6 +317,7 @@ async function requireAuth() {
   }
 
   bindAuthGate();
+      bindLogout();
 
   // Add a timeout so auth calls can’t hang forever.
   const timeoutMs = 4500;
