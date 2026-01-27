@@ -10,16 +10,56 @@
   --error: #FF6B6B;
 }
 
-html, body {
-  height: auto;
+
+/* Layout sanity: prevent padding from causing horizontal overflow */
+*, *::before, *::after { box-sizing: border-box; }
+/* --- Layout stability fixes (laptop + iPad) --- */
+html {
+  height: 100%;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+body {
   min-height: 100%;
-  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  overflow-y: auto;   /* allow full page scroll */
+  overflow-x: hidden; /* prevent horizontal bounce */
+}
+
+/* Container should not clip the right column */
+.container {
+  width: 100%;
+  box-sizing: border-box;
+  overflow: visible; /* don't cut off right column/cards */
+}
+
+/* Prevent any card/content from forcing a horizontal overflow */
+.card, .topbar, .content-wrapper, .left, .right {
+  max-width: 100%;
+}
+
+/* Make 2-col layout more fluid on laptops */
+@media (min-width: 1101px) and (max-width: 1400px){
+  .container{
+    grid-template-columns: minmax(380px, 520px) minmax(0, 1fr);
+  }
+}
+@media (min-width: 1401px){
+  .container{
+    grid-template-columns: minmax(420px, 560px) minmax(0, 1fr);
+  }
+}
+
+html, body {
+  height: 100%;
   margin: 0;
   font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--text-primary);
   background: radial-gradient(ellipse at top, #1B232A 0%, #0F1418 55%, #0B0F12 100%);
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+
   overflow-y: auto;
 }
 
@@ -74,10 +114,11 @@ html, body {
   margin: 0 auto;
   padding: 24px;
   display: grid;
-  grid-template-columns: 480px 1fr;
+  grid-template-columns: minmax(420px, 480px) minmax(0, 1fr);
   gap: 24px;
   min-height: 100vh;
-}
+
+  }
 
 .left, .right{ min-width: 0; }
 
@@ -387,25 +428,4 @@ button:active{ transform: translateY(0px); opacity: .95; }
 .startup-overlay {
   transition: opacity 0.3s ease;
 }
-
-/* ===== FINAL VIEWPORT + SCROLL OVERRIDES (Laptop + iPad) ===== */
-html, body {
-  height: auto !important;
-  min-height: 100% !important;
-  overflow-y: auto !important;
-  overflow-x: hidden !important;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* Never cap the app height; allow full-page scroll */
-.content-wrapper,
-.container {
-  height: auto !important;
-  min-height: 100vh;
-  overflow: visible !important;
-}
-
-/* Ensure columns don't force overflow */
-.left, .right, .card {
-  min-width: 0;
-}
+  
