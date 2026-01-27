@@ -1,5 +1,23 @@
 'use strict';
 
+// === HARD FAILSAFE: never let the startup overlay trap the UI ===
+(function hardKillStartupOverlay(){
+  const kill = () => {
+    const o = document.getElementById('startupOverlay');
+    if (!o) return;
+    try {
+      o.style.opacity = '0';
+      o.style.pointerEvents = 'none';
+      setTimeout(() => { try { o.remove(); } catch(_) {} }, 300);
+    } catch(_) {}
+  };
+  // Run a few times to beat race conditions / caching oddities
+  setTimeout(kill, 1500);
+  setTimeout(kill, 3500);
+  window.addEventListener('load', () => setTimeout(kill, 250));
+})();
+
+
 /**
  * ProCan Sanitation Ops Tracker (J.A.I.D.A)
  * Adds Supabase:
@@ -140,78 +158,154 @@ function setDefaultDate() {
 }
 
 // ==============================
-// Auth overlay (no HTML edits required)
 // ==============================
-function ensureAuthOverlay() {
-  if (document.getElementById('authOverlay')) return;
+// Auth gate (uses existing #authGate in index.html)
+// ==============================
+function setAuthMsg(text, kind = 'info') {
+  const el = document.getElementById('authMsg');
+  if (!el) return;
+  el.style.display = 'block';
+  el.textContent = text || '';
+  el.className = 'empty-state';
+  el.style.border = kind === 'error' ? '1px solid rgba(255,80,80,0.35)' : '1px solid rgba(255,255,255,0.12)';
+}
 
-  const overlay = document.createElement('div');
-  overlay.id = 'authOverlay';
-  overlay.style.cssText = `
-    position:fixed; inset:0; z-index:20000;
-    display:none; align-items:center; justify-content:center;
-    background: rgba(0,0,0,0.72); padding: 18px;
-  `;
+function showAuthGate() {
+  const gate = document.getElementById('authGate');
+  if (gate) gate.style.display = 'flex';
+}
+function hideAuthGate() {
+  const gate = document.getElementById('authGate');
+  if (gate) gate.style.display = 'none';
+  const msg = document.getElementById('authMsg');
+  if (msg) msg.style.display = 'none';
+}
 
-  overlay.innerHTML = `
-    <div style="width:min(520px, 100%); border:1px solid rgba(255,255,255,0.12); border-radius:16px; padding:18px; background: rgba(12,12,12,0.92); box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div style="font-weight:700; font-size:18px;">ProCan Ops Login</div>
-        <div style="opacity:.7; font-size:12px;">Supabase Auth</div>
-      </div>
-      <div style="margin-top:14px; display:grid; gap:10px;">
-        <input id="authEmail" type="email" placeholder="Email" style="padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25); color:#fff;">
-        <input id="authPass" type="password" placeholder="Password" style="padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25); color:#fff;">
-        <button id="authBtn" class="btn-primary" type="button" style="width:100%;">Sign In</button>
-        <div style="opacity:.7; font-size:12px; line-height:1.35;">
-          Create your first admin user in Supabase → Authentication → Users.
-        </div>
-      </div>
-    </div>
-  `;
+function showAppShell() {
+  const app = document.getElementById('appShell');
+  if (app) app.style.display = 'block';
+}
+function hideAppShell() {
+  const app = document.getElementById('appShell');
+  if (app) app.style.display = 'none';
+}
 
-  document.body.appendChild(overlay);
+// Prevent “stuck on boot” no matter what.
+function hideStartupOverlay() {
+  const overlay = document.getElementById('startupOverlay');
+  if (!overlay) return;
+  overlay.style.transition = 'opacity 0.25s ease';
+  overlay.style.opacity = '0';
+  overlay.style.pointerEvents = 'none';
+  setTimeout(() => overlay.remove(), 260);
+}
 
-  overlay.querySelector('#authBtn').addEventListener('click', async () => {
+// Bind login/signup buttons to Supabase auth.
+// Safe to call multiple times.
+function bindAuthGate() {
+  const btnLogin = document.getElementById('btnLogin');
+  const btnSignup = document.getElementById('btnSignup');
+  if (!btnLogin || !btnSignup) return;
+
+  // Avoid double-binding
+  if (btnLogin.dataset.bound === '1') return;
+  btnLogin.dataset.bound = '1';
+  btnSignup.dataset.bound = '1';
+
+  btnLogin.addEventListener('click', async () => {
     try {
-      const email = String(document.getElementById('authEmail')?.value || '').trim();
-      const password = String(document.getElementById('authPass')?.value || '').trim();
-      if (!email || !password) {
-        showAlert('Enter email + password', 'error');
+      if (!supabase) {
+        setAuthMsg('Supabase client not initialized.', 'error');
         return;
       }
+      const email = String(document.getElementById('authEmail')?.value || '').trim();
+      const password = String(document.getElementById('authPassword')?.value || '').trim();
+      if (!email || !password) {
+        setAuthMsg('Enter email and password.', 'error');
+        return;
+      }
+      setAuthMsg('Logging in…');
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      showAlert('✅ Logged in', 'success');
-      overlay.style.display = 'none';
+
+      hideAuthGate();
+      showAppShell();
+
       await syncFromSupabase();
+      saveStateLocal();
       renderEverything();
     } catch (e) {
       console.error(e);
-      showAlert(`Login failed: ${e?.message || 'Unknown error'}`, 'error');
+      setAuthMsg(`Login failed: ${e?.message || 'Unknown error'}`, 'error');
+    }
+  });
+
+  btnSignup.addEventListener('click', async () => {
+    try {
+      if (!supabase) {
+        setAuthMsg('Supabase client not initialized.', 'error');
+        return;
+      }
+      const email = String(document.getElementById('authEmail')?.value || '').trim();
+      const password = String(document.getElementById('authPassword')?.value || '').trim();
+      if (!email || !password) {
+        setAuthMsg('Enter email and password.', 'error');
+        return;
+      }
+      setAuthMsg('Creating account…');
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) throw error;
+
+      setAuthMsg('Account created. If email confirmation is required, confirm then login.', 'info');
+    } catch (e) {
+      console.error(e);
+      setAuthMsg(`Signup failed: ${e?.message || 'Unknown error'}`, 'error');
     }
   });
 }
 
+function ensureAuthOverlay() { /* legacy no-op: using #authGate */ }
+
 async function requireAuth() {
+  // If no Supabase configured, allow local mode and show app.
   if (!supabase) {
-    // Local mode: no auth gate
     hideAuthGate();
     showAppShell();
     return true;
   }
-  ensureAuthOverlay();
 
-const { data } = await supabase.auth.getSession();
-  const session = data?.session;
-  const overlay = document.getElementById('authOverlay');
-  if (!session) {
-    if (overlay) overlay.style.display = 'flex';
+  bindAuthGate();
+
+  // Add a timeout so auth calls can’t hang forever.
+  const timeoutMs = 4500;
+  const withTimeout = (p) =>
+    Promise.race([
+      p,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Auth check timed out')), timeoutMs))
+    ]);
+
+  try {
+    const { data } = await withTimeout(supabase.auth.getSession());
+    const session = data?.session;
+
+    if (!session) {
+      hideAppShell();
+      showAuthGate();
+      return false;
+    }
+
+    hideAuthGate();
+    showAppShell();
+    return true;
+  } catch (e) {
+    console.error(e);
+    hideAppShell();
+    showAuthGate();
+    setAuthMsg(e?.message || 'Auth error', 'error');
     return false;
   }
-  if (overlay) overlay.style.display = 'none';
-  return true;
 }
+
 
 // ==============================
 // Local fallback (kept)
@@ -988,78 +1082,83 @@ function renderEverything() {
 // Init + event bindings
 // ==============================
 async function boot() {
-  // Failsafe: never let the boot overlay trap the UI
-  setTimeout(() => {
-    try { hideStartupOverlay(); } catch (_) {}
-  }, 3500);
+  // Failsafe: never let the startup overlay trap the UI
+  setTimeout(() => { try { hideStartupOverlay(); } catch (_) {} }, 4000);
 
   try {
-  // Local first so UI has something even if supabase isn't ready.
-  loadStateLocal();
-
-  // Set defaults / bind local UI
-  setDefaultDate();
-  setupStatusToggle();
-  setupAutoPricing();
-
-  // Bind your “Log Completed Job” form
-  const saleForm = document.getElementById('saleForm');
-  if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
-
-  // Bind operator add form (if you have one)
-  // (You already expose addRep() on window; this just makes Enter work if you have a form wrapper.)
-  const repForm = document.getElementById('repForm');
-  if (repForm) {
-    repForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      await addRep();
-    });
-  }
-
-  // Try Supabase
-  initSupabase();
-
-  // If supabase is configured, require auth and then sync.
-  // If not configured, we run in local mode.
-  if (supabase) {
-    ensureAuthOverlay();
-
-    // Live auth changes (login/logout)
-    try {
-      supabase.auth.onAuthStateChange(async (_event, _session) => {
+      // Local first so UI has something even if supabase isn't ready.
+      loadStateLocal();
+    
+      // Set defaults / bind local UI
+      setDefaultDate();
+      setupStatusToggle();
+      setupAutoPricing();
+    
+      // Bind your “Log Completed Job” form
+      const saleForm = document.getElementById('saleForm');
+      if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
+    
+      // Bind operator add form (if you have one)
+      // (You already expose addRep() on window; this just makes Enter work if you have a form wrapper.)
+      const repForm = document.getElementById('repForm');
+      if (repForm) {
+        repForm.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          await addRep();
+        });
+      }
+    
+      // Try Supabase
+      initSupabase();
+    
+      // If supabase is configured, require auth and then sync.
+      // If not configured, we run in local mode.
+      if (supabase) {
+        ensureAuthOverlay();
+    
+        // Live auth changes (login/logout)
+        try {
+          supabase.auth.onAuthStateChange(async (_event, _session) => {
+            const ok = await requireAuth();
+            if (!ok) return;
+            await syncFromSupabase();
+            saveStateLocal(); // keep local backup copy
+            renderEverything();
+          });
+        } catch (e) {
+          console.warn('Auth listener error:', e);
+        }
+    
         const ok = await requireAuth();
-        if (!ok) return;
-        await syncFromSupabase();
-        saveStateLocal(); // keep local backup copy
-        renderEverything();
-      });
-    } catch (e) {
-      console.warn('Auth listener error:', e);
-    }
-
-    const ok = await requireAuth();
-    if (ok) {
-      await syncFromSupabase();
-      saveStateLocal();
-    }
-  }
-
-  // First render
-  renderEverything();
-
-  // Default tab behavior: keep your existing default if you already do it.
-  // Otherwise, show "all" by default.
-  if (typeof window.switchTab === 'function') {
-    try { window.switchTab('all'); } catch (e) {}
-  }
-
+        if (ok) {
+          await syncFromSupabase();
+          saveStateLocal();
+        }
+      }
+    
+      // First render
+      renderEverything();
+    
+      // Default tab behavior: keep your existing default if you already do it.
+      // Otherwise, show "all" by default.
+      if (typeof window.switchTab === 'function') {
+        try { window.switchTab('all'); } catch (e) {}
+      }
   } catch (err) {
     console.error('BOOT ERROR:', err);
-    try { showAuthMsg(`Boot error: ${err?.message || err}`, 'error'); } catch (_) {}
-    // If boot fails, still try to reveal something
-    try { showAuthGate(); } catch (_) {}
+    try { setAuthMsg(err?.message || String(err), 'error'); } catch (_) {}
+    try {
+      // If Supabase is enabled, fall back to showing the auth gate so you can still log in.
+      if (supabase) {
+        hideAppShell();
+        showAuthGate();
+      } else {
+        hideAuthGate();
+        showAppShell();
+      }
+    } catch (_) {}
   } finally {
-    // Always remove the startup overlay
+    // Always dismiss startup overlay (even if boot throws or auth hangs)
     try { hideStartupOverlay(); } catch (_) {}
   }
 }
