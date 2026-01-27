@@ -1,3 +1,39 @@
+
+/* ===== Immediate first paint ===== */
+document.addEventListener('DOMContentLoaded', () => {
+  const o = document.getElementById('startupOverlay');
+  if (o) {
+    o.classList.add('hidden');
+    setTimeout(()=>o.remove(), 300);
+  }
+});
+
+/* ===== Background Supabase init ===== */
+let supabaseClient = null;
+function initSupabaseBackground(){
+  try{
+    if (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY){
+      supabaseClient = window.supabase.createClient(
+        window.SUPABASE_URL,
+        window.SUPABASE_ANON_KEY
+      );
+      // fire-and-forget auth hydrate
+      supabaseClient.auth.getSession()
+        .then(({data})=>{
+          if (data && data.session){
+            console.log('Session restored');
+            document.dispatchEvent(new CustomEvent('auth:ready',{detail:data.session}));
+          } else {
+            document.dispatchEvent(new CustomEvent('auth:ready',{detail:null}));
+          }
+        })
+        .catch(err=>console.warn('Auth hydrate failed', err));
+    }
+  }catch(e){ console.warn('Supabase init failed', e); }
+}
+initSupabaseBackground();
+
+
 'use strict';
 
 // === HARD FAILSAFE: never let the startup overlay trap the UI ===
