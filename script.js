@@ -181,6 +181,16 @@ function hideAuthGate() {
   if (gate) gate.style.display = 'none';
 }
 
+function showAppShell() {
+  const shell = document.getElementById('appShell');
+  if (shell) shell.style.display = 'block';
+}
+
+function hideAppShell() {
+  const shell = document.getElementById('appShell');
+  if (shell) shell.style.display = 'none';
+}
+
 function bindAuthGateOnce() {
   if (__authGateBound) return;
   __authGateBound = true;
@@ -226,7 +236,7 @@ function bindAuthGateOnce() {
 }
 
 async function requireAuth() {
-  if (!window.supabaseClient) return true; // if no window.supabaseClient configured, allow local mode
+  if (!window.supabaseClient) { showAppShell(); hideAuthGate(); return true; } // local mode
   ensureAuthOverlay();
 
   try {
@@ -236,14 +246,17 @@ async function requireAuth() {
     const session = data?.session;
     if (!session) {
       showAuthGate();
+      hideAppShell();
       return false;
     }
 
     hideAuthGate();
+    showAppShell();
     return true;
   } catch (e) {
     console.error('Auth session check failed:', e);
     showAuthGate();
+    hideAppShell();
     showAuthMsg(`Auth error: ${e?.message || 'Unknown error'}`, 'error');
     return false;
   }
@@ -1023,94 +1036,67 @@ function renderEverything() {
 // ==============================
 // Init + event bindings
 // ==============================
-
-// ==============================
-// Startup overlay (Jaida boot screen) — ALWAYS dismiss
-// ==============================
-function hideStartupOverlay() {
-  const overlay = document.getElementById('startupOverlay');
-  if (!overlay) return;
-  overlay.style.transition = 'opacity 0.25s ease';
-  overlay.style.opacity = '0';
-  overlay.style.pointerEvents = 'none';
-  setTimeout(() => {
-    try { overlay.remove(); } catch (_) {}
-  }, 260);
-}
-
-
 async function boot() {
-  // Safety: if anything in boot throws, we still dismiss the boot overlay
-  try {
-      // Local first so UI has something even if window.supabaseClient isn't ready.
-      loadStateLocal();
-    
-      // Set defaults / bind local UI
-      setDefaultDate();
-      setupStatusToggle();
-      setupAutoPricing();
-    
-      // Bind your “Log Completed Job” form
-      const saleForm = document.getElementById('saleForm');
-      if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
-    
-      // Bind operator add form (if you have one)
-      // (You already expose addRep() on window; this just makes Enter work if you have a form wrapper.)
-      const repForm = document.getElementById('repForm');
-      if (repForm) {
-        repForm.addEventListener('submit', async (e) => {
-          e.preventDefault();
-          await addRep();
-        });
-      }
-    
-      // Try Supabase
-      initSupabase();
-    
-      // If window.supabaseClient is configured, require auth and then sync.
-      // If not configured, we run in local mode.
-      if (window.supabaseClient) {
-        ensureAuthOverlay();
-    
-        // Live auth changes (login/logout)
-        try {
-          window.supabaseClient.auth.onAuthStateChange(async (_event, _session) => {
-            const ok = await requireAuth();
-            if (!ok) return;
-            await syncFromSupabase();
-            saveStateLocal(); // keep local backup copy
-            renderEverything();
-          });
-        } catch (e) {
-          console.warn('Auth listener error:', e);
-        }
-    
-        const ok = await requireAuth();
-        if (ok) {
-          await syncFromSupabase();
-          saveStateLocal();
-        }
-      }
-    
-      // First render
-      renderEverything();
-    
-      // Default tab behavior: keep your existing default if you already do it.
-      // Otherwise, show "all" by default.
-      if (typeof window.switchTab === 'function') {
-        try { window.switchTab('all'); } catch (e) {}
-      }
-  } catch (err) {
-    console.error('BOOT ERROR:', err);
+  // Local first so UI has something even if window.supabaseClient isn't ready.
+  loadStateLocal();
+
+  // Set defaults / bind local UI
+  setDefaultDate();
+  setupStatusToggle();
+  setupAutoPricing();
+
+  // Bind your “Log Completed Job” form
+  const saleForm = document.getElementById('saleForm');
+  if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
+
+  // Bind operator add form (if you have one)
+  // (You already expose addRep() on window; this just makes Enter work if you have a form wrapper.)
+  const repForm = document.getElementById('repForm');
+  if (repForm) {
+    repForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await addRep();
+    });
+  }
+
+  // Try Supabase
+  initSupabase();
+
+  // If window.supabaseClient is configured, require auth and then sync.
+  // If not configured, we run in local mode.
+  if (window.supabaseClient) {
+    ensureAuthOverlay();
+
+    // Live auth changes (login/logout)
     try {
-      if (typeof showAlert === 'function') {
-        showAlert(`Boot error: ${err?.message || err}`, 'error');
-      }
-    } catch (_) {}
-  } finally {
-    hideStartupOverlay();
+      window.supabaseClient.auth.onAuthStateChange(async (_event, _session) => {
+        const ok = await requireAuth();
+        if (!ok) return;
+        await syncFromSupabase();
+        saveStateLocal(); // keep local backup copy
+        renderEverything();
+      });
+    } catch (e) {
+      console.warn('Auth listener error:', e);
+    }
+
+    const ok = await requireAuth();
+    if (ok) {
+      await syncFromSupabase();
+      saveStateLocal();
+    }
+  }
+
+  // First render
+  renderEverything();
+
+  // Default tab behavior: keep your existing default if you already do it.
+  // Otherwise, show "all" by default.
+  if (typeof window.switchTab === 'function') {
+    try { window.switchTab('all'); } catch (e) {}
   }
 }
+
 // Make sure these are available globally (your HTML onclicks rely on this)
 window.renderEverything = renderEverything;
 
@@ -1120,10 +1106,3 @@ if (document.readyState === 'loading') {
 } else {
   boot();
 }
-
-
-// Failsafe: if boot overlay is still present after a few seconds, remove it so the UI isn't permanently blocked.
-setTimeout(() => {
-  try { hideStartupOverlay(); } catch (_) {}
-}, 3500);
-
