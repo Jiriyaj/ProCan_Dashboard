@@ -8,32 +8,39 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+
 /* ===== Background Supabase init ===== */
-let supabaseClient = null;
-function initSupabaseBackground(){
+(function(){
+  // Keep state on window so this file can be loaded multiple times without crashing
+  const STATE_KEY = '__PROCAN__';
+  const st = (window[STATE_KEY] = window[STATE_KEY] || {});
+  if (st.supabaseInitialized) return;
+  st.supabaseInitialized = true;
+
   try{
     if (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY){
-      supabaseClient = window.supabase.createClient(
+      st.supabaseClient = window.supabase.createClient(
         window.SUPABASE_URL,
         window.SUPABASE_ANON_KEY
       );
+
       // fire-and-forget auth hydrate
-      supabaseClient.auth.getSession()
+      st.supabaseClient.auth.getSession()
         .then(({data})=>{
-          if (data && data.session){
-            console.log('Session restored');
-            document.dispatchEvent(new CustomEvent('auth:ready',{detail:data.session}));
-          } else {
-            document.dispatchEvent(new CustomEvent('auth:ready',{detail:null}));
-          }
+          const session = data && data.session ? data.session : null;
+          console.log(session ? 'Session restored' : 'No session');
+          document.dispatchEvent(new CustomEvent('auth:ready',{detail:session}));
         })
         .catch(err=>console.warn('Auth hydrate failed', err));
+    } else {
+      console.warn('Supabase config missing (SUPABASE_URL / SUPABASE_ANON_KEY / supabase-js)');
+      document.dispatchEvent(new CustomEvent('auth:ready',{detail:null}));
     }
-  }catch(e){ console.warn('Supabase init failed', e); }
-}
-initSupabaseBackground();
-
-
+  }catch(e){
+    console.warn('Supabase init failed', e);
+    document.dispatchEvent(new CustomEvent('auth:ready',{detail:null}));
+  }
+})();
 'use strict';
 
 // === HARD FAILSAFE: never let the startup overlay trap the UI ===
@@ -135,7 +142,7 @@ let state = {
 // ==============================
 // Supabase setup
 // ==============================
-let supabaseClient = null;
+
 function supabaseReady() {
     const url = String(window.SUPABASE_URL || '');
     const key = String(window.SUPABASE_ANON_KEY || '');

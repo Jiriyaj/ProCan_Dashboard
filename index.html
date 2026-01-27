@@ -8,7 +8,20 @@
   <link rel="icon" href="data:,">
 </head>
 <body>
-  <!-- Startup Sequence -->
+  
+
+<script>
+  // Remove startup overlay ASAP (cannot be blocked by later JS errors)
+  window.addEventListener('DOMContentLoaded', function(){
+    var o = document.getElementById('startupOverlay');
+    if (o){
+      o.classList.add('hidden');
+      setTimeout(function(){ try{o.remove();}catch(e){} }, 300);
+    }
+  });
+</script>
+
+<!-- Startup Sequence -->
   <div class="startup-overlay" id="startupOverlay" aria-hidden="true" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10000;">
     <div class="startup-logo">ProCan J.A.I.D.A</div>
     <div class="startup-text">J.A.I.D.A, initializing ops console…</div>
