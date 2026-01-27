@@ -12,9 +12,8 @@
     } catch(_) {}
   };
   // Run a few times to beat race conditions / caching oddities
-  setTimeout(kill, 1500);
-  setTimeout(kill, 3500);
-  window.addEventListener('load', () => setTimeout(kill, 250));
+  setTimeout(kill, 20000);
+  setTimeout(kill, 30000);
 })();
 
 
@@ -99,7 +98,7 @@ let state = {
 // ==============================
 // Supabase setup
 // ==============================
-let supabaseClient = null;
+let supabase = null;
 function supabaseReady() {
     const url = String(window.SUPABASE_URL || '');
     const key = String(window.SUPABASE_ANON_KEY || '');
@@ -117,8 +116,8 @@ function supabaseReady() {
   
 function initSupabase() {
   if (!supabaseReady()) return null;
-  supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-  return supabaseClient;
+  supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  return supabase;
 }
 
 // ==============================
@@ -191,8 +190,15 @@ function hideAppShell() {
 }
 
 // Prevent “stuck on boot” no matter what.
+
+function showStartupOverlay() {
+  const overlay = document.getElementById('startupOverlay');
+  if (!overlay) return;
+  overlay.style.opacity = '1';
+  overlay.style.pointerEvents = 'auto';
+}
+
 function hideStartupOverlay() {
-  try { revealContentWrapper(); } catch (_) {}
   const overlay = document.getElementById('startupOverlay');
   if (!overlay) return;
   overlay.style.transition = 'opacity 0.25s ease';
@@ -215,7 +221,7 @@ function bindAuthGate() {
 
   btnLogin.addEventListener('click', async () => {
     try {
-      if (!supabaseClient) {
+      if (!supabase) {
         setAuthMsg('Supabase client not initialized.', 'error');
         return;
       }
@@ -226,7 +232,7 @@ function bindAuthGate() {
         return;
       }
       setAuthMsg('Logging in…');
-      const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
       hideAuthGate();
@@ -243,7 +249,7 @@ function bindAuthGate() {
 
   btnSignup.addEventListener('click', async () => {
     try {
-      if (!supabaseClient) {
+      if (!supabase) {
         setAuthMsg('Supabase client not initialized.', 'error');
         return;
       }
@@ -254,7 +260,7 @@ function bindAuthGate() {
         return;
       }
       setAuthMsg('Creating account…');
-      const { error } = await supabaseClient.auth.signUp({ email, password });
+      const { error } = await supabase.auth.signUp({ email, password });
       if (error) throw error;
 
       setAuthMsg('Account created. If email confirmation is required, confirm then login.', 'info');
@@ -265,80 +271,28 @@ function bindAuthGate() {
   });
 }
 
-// Bind logout button (top-right). Safe to call multiple times.
-function bindLogout() {
-  const btn = document.getElementById('btnLogout');
-  if (!btn) return;
-  if (btn.dataset.bound === '1') return;
-  btn.dataset.bound = '1';
-
-  btn.addEventListener('click', async () => {
-    try {
-      // Local-only mode (no Supabase)
-      if (!supabaseClient) {
-        showAlert('No Supabase session to sign out of.', 'error');
-        hideAppShell();
-        showAuthGate();
-        return;
-      }
-
-      btn.disabled = true;
-      const prev = btn.textContent;
-      btn.textContent = 'Logging out…';
-
-      // Prefer local sign-out to avoid network 403s on some setups.
-      const { error } = await supabaseClient.auth.signOut({ scope: 'local' });
-      if (error) {
-        // Even if the network sign-out fails, clear local UI/session state.
-        console.warn('Sign out error (continuing):', error);
-      }
-
-      // Immediately reset UI (don’t rely only on onAuthStateChange timing)
-      hideAppShell();
-      showAuthGate();
-      setAuthMsg('Logged out.', 'info');
-    } catch (e) {
-      console.error('Logout failed:', e);
-      showAlert(`Logout failed: ${e?.message || 'Unknown error'}`, 'error');
-    } finally {
-      try {
-        btn.disabled = false;
-        btn.textContent = 'Logout';
-      } catch (_) {}
-    }
-  });
-}
-
-
 function ensureAuthOverlay() { /* legacy no-op: using #authGate */ }
 
 async function requireAuth() {
   // If no Supabase configured, allow local mode and show app.
-  if (!supabaseClient) {
+  if (!supabase) {
     hideAuthGate();
     showAppShell();
     return true;
   }
 
   bindAuthGate();
-      bindLogout();
 
   // Add a timeout so auth calls can’t hang forever.
-  const timeoutMs = 15000;
-  const withTimeout = (p) => Promise.race([
+  const timeoutMs = 4500;
+  const withTimeout = (p) =>
+    Promise.race([
       p,
-      new Promise((resolve) => setTimeout(() => resolve({ __timed_out: true }), timeoutMs))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Auth check timed out')), timeoutMs))
     ]);
-try {
-    const res = await withTimeout(supabaseClient.auth.getSession());
-    if (res && res.__timed_out) {
-      // Don’t blank the UI on slow networks/devices — fall back to auth gate.
-      hideAppShell();
-      showAuthGate();
-      setAuthMsg('Session check is taking longer than expected. Please try again.', 'info');
-      return false;
-    }
-    const { data } = res || {};
+
+  try {
+    const { data } = await withTimeout(supabase.auth.getSession());
     const session = data?.session;
 
     if (!session) {
@@ -400,22 +354,15 @@ function saveStateLocal() {
   }
 }
 
-
-function isMissingTableError(err, tableName){
-  const msg = (err && (err.message || err.error_description)) || '';
-  const code = err && err.code;
-  return code === 'PGRST205' || msg.includes(`Could not find the table 'public.${tableName}'`) || msg.includes(`Could not find the table "public.${tableName}"`);
-}
-
 // ==============================
 // Supabase sync
 // ==============================
 async function syncFromSupabase() {
-  if (!supabaseClient) return;
+  if (!supabase) return;
 
   // Operators
   {
-    const { data, error } = await supabaseClient.from('operators').select('*').order('created_at', { ascending: true });
+    const { data, error } = await supabase.from('operators').select('*').order('created_at', { ascending: true });
     if (error) throw error;
     state.reps = (data || []).map(o => ({
       id: o.id,
@@ -428,21 +375,21 @@ async function syncFromSupabase() {
 
   // Orders (from intake)
   {
-    const { data, error } = await supabaseClient.from('orders').select('*').order('created_at', { ascending: false }).limit(250);
+    const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(250);
     if (error) throw error;
     state.orders = data || [];
   }
 
   // Assignments
   {
-    const { data, error } = await supabaseClient.from('assignments').select('*').order('service_date', { ascending: true });
+    const { data, error } = await supabase.from('assignments').select('*').order('service_date', { ascending: true });
     if (error) throw error;
     state.assignments = data || [];
   }
 
   // Visits (optional, your manual “Log Completed Job”)
   {
-    const { data, error } = await supabaseClient.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
+    const { data, error } = await supabase.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
     if (error) throw error;
     state.sales = (data || []).map(v => ({
       id: v.id,
@@ -465,7 +412,7 @@ async function syncFromSupabase() {
 }
 
 async function upsertOperator(rep) {
-  if (!supabaseClient) return;
+  if (!supabase) return;
   const payload = {
     id: rep.id || undefined,
     name: rep.name,
@@ -473,19 +420,13 @@ async function upsertOperator(rep) {
     is_manager: !!rep.isManager,
     active: rep.active !== false
   };
-  const { data, error } = await supabaseClient.from('operators').upsert(payload).select('*').single();
-  if (error) {
-    if (isMissingTableError(error, 'operators')) {
-      showAlert("Can't save operator: Supabase table 'operators' is missing. Run supabase-schema.sql first.", 'error');
-      return null;
-    }
-    throw error;
-  }
+  const { data, error } = await supabase.from('operators').upsert(payload).select('*').single();
+  if (error) throw error;
   return data;
 }
 
 async function insertVisit(visit) {
-  if (!supabaseClient) return;
+  if (!supabase) return;
   const payload = {
     operator_id: visit.repId || null,
     customer_name: visit.customerName,
@@ -502,16 +443,16 @@ async function insertVisit(visit) {
     deep_clean_condition: visit.deepCleanCondition || null,
     deep_clean_total: Number(visit.deepCleanTotal || 0)
   };
-  const { data, error } = await supabaseClient.from('visits').insert(payload).select('*').single();
+  const { data, error } = await supabase.from('visits').insert(payload).select('*').single();
   if (error) throw error;
   return data;
 }
 
 async function assignOrder({ orderId, operatorId, serviceDate, sequence = 1 }) {
-  if (!supabaseClient) return;
+  if (!supabase) return;
 
   // Upsert assignment (unique(order_id) prevents dupes)
-  const { data: a, error: aErr } = await supabaseClient
+  const { data: a, error: aErr } = await supabase
     .from('assignments')
     .upsert({
       order_id: orderId,
@@ -525,7 +466,7 @@ async function assignOrder({ orderId, operatorId, serviceDate, sequence = 1 }) {
   if (aErr) throw aErr;
 
   // Mark order scheduled
-  const { error: oErr } = await supabaseClient
+  const { error: oErr } = await supabase
     .from('orders')
     .update({ status: 'scheduled' })
     .eq('id', orderId);
@@ -617,7 +558,7 @@ async function addRep() {
   };
 
   try {
-    if (supabaseClient) {
+    if (supabase) {
       const saved = await upsertOperator(rep);
       rep.id = saved.id;
     }
@@ -747,7 +688,7 @@ function renderOrdersPanel() {
 
 window.assignOrderFromUI = async function(orderUuid) {
   try {
-    if (!supabaseClient) throw new Error('Supabase not configured.');
+    if (!supabase) throw new Error('Supabase not configured.');
 
     const op = String(document.getElementById(`asg_op_${orderUuid}`)?.value || '');
     const dt = String(document.getElementById(`asg_dt_${orderUuid}`)?.value || '');
@@ -843,7 +784,7 @@ window.renderRoutesPanel = renderRoutesPanel;
 
 window.refreshSupabase = async function() {
   try {
-    if (!supabaseClient) {
+    if (!supabase) {
       showAlert('Supabase not configured (local mode).', 'error');
       return;
     }
@@ -1105,7 +1046,7 @@ async function handleSaleSubmit(e) {
   };
 
   try {
-    if (supabaseClient) {
+    if (supabase) {
       await insertVisit(visit);
       await syncFromSupabase();
     } else {
@@ -1155,74 +1096,91 @@ function renderEverything() {
 // ==============================
 // Init + event bindings
 // ==============================
+
 async function boot() {
-  // Failsafe: never let the startup overlay trap the UI
-  setTimeout(() => { try { hideStartupOverlay(); } catch (_) {} }, 4000);
+  // Keep the startup overlay visible until UI is actually ready.
+  try { showStartupOverlay(); } catch (_) {}
+
+  // Absolute failsafe (in case something deadlocks): 30s
+  setTimeout(() => { try { hideStartupOverlay(); } catch (_) {} }, 30000);
 
   try {
-      // Local first so UI has something even if supabaseClient isn't ready.
-      loadStateLocal();
-    
-      // Set defaults / bind local UI
-      setDefaultDate();
-      setupStatusToggle();
-      setupAutoPricing();
-    
-      // Bind your “Log Completed Job” form
-      const saleForm = document.getElementById('saleForm');
-      if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
-    
-      // Bind operator add form (if you have one)
-      // (You already expose addRep() on window; this just makes Enter work if you have a form wrapper.)
-      const repForm = document.getElementById('repForm');
-      if (repForm) {
-        repForm.addEventListener('submit', async (e) => {
-          e.preventDefault();
-          await addRep();
-        });
-      }
-    
-      // Try Supabase
-      initSupabase();
-    
-      // If supabaseClient is configured, require auth and then sync.
-      // If not configured, we run in local mode.
-      if (supabaseClient) {
-        ensureAuthOverlay();
-    
-        // Live auth changes (login/logout)
-        try {
-          supabaseClient.auth.onAuthStateChange(async (_event, _session) => {
-            const ok = await requireAuth();
-            if (!ok) return;
-            await syncFromSupabase();
-            saveStateLocal(); // keep local backup copy
-            renderEverything();
-          });
-        } catch (e) {
-          console.warn('Auth listener error:', e);
-        }
-    
-        const ok = await requireAuth();
-        if (ok) {
+    // Local first so UI has something even if Supabase isn't ready.
+    loadStateLocal();
+
+    // Bind local UI
+    setDefaultDate();
+    setupStatusToggle();
+    setupAutoPricing();
+
+    const saleForm = document.getElementById('saleForm');
+    if (saleForm) saleForm.addEventListener('submit', handleSaleSubmit);
+
+    const repForm = document.getElementById('repForm');
+    if (repForm) {
+      repForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await addRep();
+      });
+    }
+
+    // Init Supabase (if configured)
+    initSupabase();
+
+    if (supabaseClient) {
+      bindAuthGate();
+      bindLogout();
+
+      // Live auth changes (login/logout)
+      try {
+        supabaseClient.auth.onAuthStateChange(async () => {
+          const ok = await requireAuth();
+          if (!ok) {
+            revealContentWrapper();
+            hideStartupOverlay();
+            return;
+          }
           await syncFromSupabase();
           saveStateLocal();
-        }
+          renderEverything();
+          showAppShell();
+          revealContentWrapper();
+          hideStartupOverlay();
+        });
+      } catch (e) {
+        console.warn('Auth listener error:', e);
       }
-    
-      // First render
-      renderEverything();
-    
-      // Default tab behavior: keep your existing default if you already do it.
-      // Otherwise, show "all" by default.
-      if (typeof window.switchTab === 'function') {
-        try { window.switchTab('all'); } catch (e) {}
+
+      const ok = await requireAuth();
+      if (!ok) {
+        // Not logged in: show auth UI then remove overlay.
+        revealContentWrapper();
+        hideStartupOverlay();
+        return;
       }
+
+      await syncFromSupabase();
+      saveStateLocal();
+    } else {
+      // Local mode
+      hideAuthGate();
+      showAppShell();
+    }
+
+    // First render + show UI
+    renderEverything();
+    try { showAppShell(); } catch (_) {}
+    revealContentWrapper();
+    hideStartupOverlay();
+
+    if (typeof window.switchTab === 'function') {
+      try { window.switchTab('all'); } catch (_) {}
+    }
   } catch (err) {
     console.error('BOOT ERROR:', err);
     try { setAuthMsg(err?.message || String(err), 'error'); } catch (_) {}
+
     try {
-      // If Supabase is enabled, fall back to showing the auth gate so you can still log in.
       if (supabaseClient) {
         hideAppShell();
         showAuthGate();
@@ -1231,10 +1189,8 @@ async function boot() {
         showAppShell();
       }
     } catch (_) {}
-  } finally {
-    try { revealContentWrapper(); } catch (_) {}
 
-    // Always dismiss startup overlay (even if boot throws or auth hangs)
+    try { revealContentWrapper(); } catch (_) {}
     try { hideStartupOverlay(); } catch (_) {}
   }
 }
