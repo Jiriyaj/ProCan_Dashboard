@@ -81,6 +81,7 @@ let state = {
 // ==============================
 // Supabase setup
 // ==============================
+let supabase = null;
 function supabaseReady() {
     const url = String(window.SUPABASE_URL || '');
     const key = String(window.SUPABASE_ANON_KEY || '');
@@ -98,14 +99,8 @@ function supabaseReady() {
   
 function initSupabase() {
   if (!supabaseReady()) return null;
-
-  if (!window.supabaseClient) {
-    window.supabaseClient = window.supabase.createClient(
-      window.SUPABASE_URL,
-      window.SUPABASE_ANON_KEY
-    );
-  }
-  return window.supabaseClient;
+  supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  return supabase;
 }
 
 // ==============================
@@ -148,118 +143,74 @@ function setDefaultDate() {
 // Auth overlay (no HTML edits required)
 // ==============================
 function ensureAuthOverlay() {
-  // Uses the existing auth UI in index.html (#authGate). No dynamic overlay injection.
-  bindAuthGateOnce();
-}
+  if (document.getElementById('authOverlay')) return;
 
-let __authGateBound = false;
+  const overlay = document.createElement('div');
+  overlay.id = 'authOverlay';
+  overlay.style.cssText = `
+    position:fixed; inset:0; z-index:20000;
+    display:none; align-items:center; justify-content:center;
+    background: rgba(0,0,0,0.72); padding: 18px;
+  `;
 
-function showAuthMsg(msg, kind = 'info') {
-  const box = document.getElementById('authMsg');
-  if (!box) return;
-  box.style.display = 'block';
-  box.textContent = msg;
-  box.className = 'empty-state';
-  // Optional styling hooks if you have them:
-  box.dataset.kind = kind;
-}
+  overlay.innerHTML = `
+    <div style="width:min(520px, 100%); border:1px solid rgba(255,255,255,0.12); border-radius:16px; padding:18px; background: rgba(12,12,12,0.92); box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700; font-size:18px;">ProCan Ops Login</div>
+        <div style="opacity:.7; font-size:12px;">Supabase Auth</div>
+      </div>
+      <div style="margin-top:14px; display:grid; gap:10px;">
+        <input id="authEmail" type="email" placeholder="Email" style="padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25); color:#fff;">
+        <input id="authPass" type="password" placeholder="Password" style="padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.25); color:#fff;">
+        <button id="authBtn" class="btn-primary" type="button" style="width:100%;">Sign In</button>
+        <div style="opacity:.7; font-size:12px; line-height:1.35;">
+          Create your first admin user in Supabase → Authentication → Users.
+        </div>
+      </div>
+    </div>
+  `;
 
-function hideAuthMsg() {
-  const box = document.getElementById('authMsg');
-  if (!box) return;
-  box.style.display = 'none';
-  box.textContent = '';
-}
+  document.body.appendChild(overlay);
 
-function showAuthGate() {
-  const gate = document.getElementById('authGate');
-  if (gate) gate.style.display = 'flex';
-}
-
-function hideAuthGate() {
-  const gate = document.getElementById('authGate');
-  if (gate) gate.style.display = 'none';
-}
-
-function showAppShell() {
-  const shell = document.getElementById('appShell');
-  if (shell) shell.style.display = 'block';
-}
-
-function hideAppShell() {
-  const shell = document.getElementById('appShell');
-  if (shell) shell.style.display = 'none';
-}
-
-function bindAuthGateOnce() {
-  if (__authGateBound) return;
-  __authGateBound = true;
-
-  const btnLogin = document.getElementById('btnLogin');
-  const btnSignup = document.getElementById('btnSignup');
-
-  if (btnLogin) {
-    btnLogin.addEventListener('click', async () => {
-      try {
-        hideAuthMsg();
-        const email = String(document.getElementById('authEmail')?.value || '').trim();
-        const password = String(document.getElementById('authPassword')?.value || '').trim();
-
-        if (!email || !password) {
-          showAuthMsg('Enter email + password.', 'error');
-          return;
-        }
-        if (!window.supabaseClient) {
-          showAuthMsg('Supabase is not configured. Check supabase-config.js.', 'error');
-          return;
-        }
-
-        const { error } = await window.supabaseClient.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-
-        hideAuthGate();
-        try { await syncFromSupabase(); } catch (_) {}
-        renderEverything();
-      } catch (e) {
-        console.error(e);
-        showAuthMsg(`Login failed: ${e?.message || 'Unknown error'}`, 'error');
+  overlay.querySelector('#authBtn').addEventListener('click', async () => {
+    try {
+      const email = String(document.getElementById('authEmail')?.value || '').trim();
+      const password = String(document.getElementById('authPass')?.value || '').trim();
+      if (!email || !password) {
+        showAlert('Enter email + password', 'error');
+        return;
       }
-    });
-  }
-
-  if (btnSignup) {
-    btnSignup.addEventListener('click', async () => {
-      // Recommended: disable public signups in Supabase and create users from dashboard.
-      showAuthMsg('Account creation is disabled. Ask admin to create your login in Supabase.', 'info');
-    });
-  }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      showAlert('✅ Logged in', 'success');
+      overlay.style.display = 'none';
+      await syncFromSupabase();
+      renderEverything();
+    } catch (e) {
+      console.error(e);
+      showAlert(`Login failed: ${e?.message || 'Unknown error'}`, 'error');
+    }
+  });
 }
 
 async function requireAuth() {
-  if (!window.supabaseClient) { showAppShell(); hideAuthGate(); return true; } // local mode
-  ensureAuthOverlay();
-
-  try {
-    const { data, error } = await window.supabaseClient.auth.getSession();
-    if (error) throw error;
-
-    const session = data?.session;
-    if (!session) {
-      showAuthGate();
-      hideAppShell();
-      return false;
-    }
-
+  if (!supabase) {
+    // Local mode: no auth gate
     hideAuthGate();
     showAppShell();
     return true;
-  } catch (e) {
-    console.error('Auth session check failed:', e);
-    showAuthGate();
-    hideAppShell();
-    showAuthMsg(`Auth error: ${e?.message || 'Unknown error'}`, 'error');
+  }
+  ensureAuthOverlay();
+
+const { data } = await supabase.auth.getSession();
+  const session = data?.session;
+  const overlay = document.getElementById('authOverlay');
+  if (!session) {
+    if (overlay) overlay.style.display = 'flex';
     return false;
   }
+  if (overlay) overlay.style.display = 'none';
+  return true;
 }
 
 // ==============================
@@ -298,11 +249,11 @@ function saveStateLocal() {
 // Supabase sync
 // ==============================
 async function syncFromSupabase() {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
 
   // Operators
   {
-    const { data, error } = await window.supabaseClient.from('operators').select('*').order('created_at', { ascending: true });
+    const { data, error } = await supabase.from('operators').select('*').order('created_at', { ascending: true });
     if (error) throw error;
     state.reps = (data || []).map(o => ({
       id: o.id,
@@ -315,21 +266,21 @@ async function syncFromSupabase() {
 
   // Orders (from intake)
   {
-    const { data, error } = await window.supabaseClient.from('orders').select('*').order('created_at', { ascending: false }).limit(250);
+    const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(250);
     if (error) throw error;
     state.orders = data || [];
   }
 
   // Assignments
   {
-    const { data, error } = await window.supabaseClient.from('assignments').select('*').order('service_date', { ascending: true });
+    const { data, error } = await supabase.from('assignments').select('*').order('service_date', { ascending: true });
     if (error) throw error;
     state.assignments = data || [];
   }
 
   // Visits (optional, your manual “Log Completed Job”)
   {
-    const { data, error } = await window.supabaseClient.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
+    const { data, error } = await supabase.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
     if (error) throw error;
     state.sales = (data || []).map(v => ({
       id: v.id,
@@ -352,7 +303,7 @@ async function syncFromSupabase() {
 }
 
 async function upsertOperator(rep) {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
   const payload = {
     id: rep.id || undefined,
     name: rep.name,
@@ -360,13 +311,13 @@ async function upsertOperator(rep) {
     is_manager: !!rep.isManager,
     active: rep.active !== false
   };
-  const { data, error } = await window.supabaseClient.from('operators').upsert(payload).select('*').single();
+  const { data, error } = await supabase.from('operators').upsert(payload).select('*').single();
   if (error) throw error;
   return data;
 }
 
 async function insertVisit(visit) {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
   const payload = {
     operator_id: visit.repId || null,
     customer_name: visit.customerName,
@@ -383,16 +334,16 @@ async function insertVisit(visit) {
     deep_clean_condition: visit.deepCleanCondition || null,
     deep_clean_total: Number(visit.deepCleanTotal || 0)
   };
-  const { data, error } = await window.supabaseClient.from('visits').insert(payload).select('*').single();
+  const { data, error } = await supabase.from('visits').insert(payload).select('*').single();
   if (error) throw error;
   return data;
 }
 
 async function assignOrder({ orderId, operatorId, serviceDate, sequence = 1 }) {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
 
   // Upsert assignment (unique(order_id) prevents dupes)
-  const { data: a, error: aErr } = await window.supabaseClient
+  const { data: a, error: aErr } = await supabase
     .from('assignments')
     .upsert({
       order_id: orderId,
@@ -406,7 +357,7 @@ async function assignOrder({ orderId, operatorId, serviceDate, sequence = 1 }) {
   if (aErr) throw aErr;
 
   // Mark order scheduled
-  const { error: oErr } = await window.supabaseClient
+  const { error: oErr } = await supabase
     .from('orders')
     .update({ status: 'scheduled' })
     .eq('id', orderId);
@@ -498,7 +449,7 @@ async function addRep() {
   };
 
   try {
-    if (window.supabaseClient) {
+    if (supabase) {
       const saved = await upsertOperator(rep);
       rep.id = saved.id;
     }
@@ -628,7 +579,7 @@ function renderOrdersPanel() {
 
 window.assignOrderFromUI = async function(orderUuid) {
   try {
-    if (!window.supabaseClient) throw new Error('Supabase not configured.');
+    if (!supabase) throw new Error('Supabase not configured.');
 
     const op = String(document.getElementById(`asg_op_${orderUuid}`)?.value || '');
     const dt = String(document.getElementById(`asg_dt_${orderUuid}`)?.value || '');
@@ -724,7 +675,7 @@ window.renderRoutesPanel = renderRoutesPanel;
 
 window.refreshSupabase = async function() {
   try {
-    if (!window.supabaseClient) {
+    if (!supabase) {
       showAlert('Supabase not configured (local mode).', 'error');
       return;
     }
@@ -986,7 +937,7 @@ async function handleSaleSubmit(e) {
   };
 
   try {
-    if (window.supabaseClient) {
+    if (supabase) {
       await insertVisit(visit);
       await syncFromSupabase();
     } else {
@@ -1037,7 +988,13 @@ function renderEverything() {
 // Init + event bindings
 // ==============================
 async function boot() {
-  // Local first so UI has something even if window.supabaseClient isn't ready.
+  // Failsafe: never let the boot overlay trap the UI
+  setTimeout(() => {
+    try { hideStartupOverlay(); } catch (_) {}
+  }, 3500);
+
+  try {
+  // Local first so UI has something even if supabase isn't ready.
   loadStateLocal();
 
   // Set defaults / bind local UI
@@ -1062,14 +1019,14 @@ async function boot() {
   // Try Supabase
   initSupabase();
 
-  // If window.supabaseClient is configured, require auth and then sync.
+  // If supabase is configured, require auth and then sync.
   // If not configured, we run in local mode.
-  if (window.supabaseClient) {
+  if (supabase) {
     ensureAuthOverlay();
 
     // Live auth changes (login/logout)
     try {
-      window.supabaseClient.auth.onAuthStateChange(async (_event, _session) => {
+      supabase.auth.onAuthStateChange(async (_event, _session) => {
         const ok = await requireAuth();
         if (!ok) return;
         await syncFromSupabase();
@@ -1095,7 +1052,18 @@ async function boot() {
   if (typeof window.switchTab === 'function') {
     try { window.switchTab('all'); } catch (e) {}
   }
+
+  } catch (err) {
+    console.error('BOOT ERROR:', err);
+    try { showAuthMsg(`Boot error: ${err?.message || err}`, 'error'); } catch (_) {}
+    // If boot fails, still try to reveal something
+    try { showAuthGate(); } catch (_) {}
+  } finally {
+    // Always remove the startup overlay
+    try { hideStartupOverlay(); } catch (_) {}
+  }
 }
+
 
 // Make sure these are available globally (your HTML onclicks rely on this)
 window.renderEverything = renderEverything;
