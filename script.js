@@ -286,8 +286,12 @@ function bindLogout() {
       const prev = btn.textContent;
       btn.textContent = 'Logging out…';
 
-      const { error } = await supabaseClient.auth.signOut();
-      if (error) throw error;
+      // Prefer local sign-out to avoid network 403s on some setups.
+      const { error } = await supabaseClient.auth.signOut({ scope: 'local' });
+      if (error) {
+        // Even if the network sign-out fails, clear local UI/session state.
+        console.warn('Sign out error (continuing):', error);
+      }
 
       // Immediately reset UI (don’t rely only on onAuthStateChange timing)
       hideAppShell();
@@ -320,15 +324,21 @@ async function requireAuth() {
       bindLogout();
 
   // Add a timeout so auth calls can’t hang forever.
-  const timeoutMs = 4500;
-  const withTimeout = (p) =>
-    Promise.race([
+  const timeoutMs = 15000;
+  const withTimeout = (p) => Promise.race([
       p,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Auth check timed out')), timeoutMs))
+      new Promise((resolve) => setTimeout(() => resolve({ __timed_out: true }), timeoutMs))
     ]);
-
-  try {
-    const { data } = await withTimeout(supabaseClient.auth.getSession());
+try {
+    const res = await withTimeout(supabaseClient.auth.getSession());
+    if (res && res.__timed_out) {
+      // Don’t blank the UI on slow networks/devices — fall back to auth gate.
+      hideAppShell();
+      showAuthGate();
+      setAuthMsg('Session check is taking longer than expected. Please try again.', 'info');
+      return false;
+    }
+    const { data } = res || {};
     const session = data?.session;
 
     if (!session) {
@@ -388,6 +398,13 @@ function saveStateLocal() {
   } catch (error) {
     console.error('Error saving state:', error);
   }
+}
+
+
+function isMissingTableError(err, tableName){
+  const msg = (err && (err.message || err.error_description)) || '';
+  const code = err && err.code;
+  return code === 'PGRST205' || msg.includes(`Could not find the table 'public.${tableName}'`) || msg.includes(`Could not find the table "public.${tableName}"`);
 }
 
 // ==============================
@@ -457,7 +474,13 @@ async function upsertOperator(rep) {
     active: rep.active !== false
   };
   const { data, error } = await supabaseClient.from('operators').upsert(payload).select('*').single();
-  if (error) throw error;
+  if (error) {
+    if (isMissingTableError(error, 'operators')) {
+      showAlert("Can't save operator: Supabase table 'operators' is missing. Run supabase-schema.sql first.", 'error');
+      return null;
+    }
+    throw error;
+  }
   return data;
 }
 
