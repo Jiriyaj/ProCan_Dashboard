@@ -99,6 +99,7 @@ let state = {
 // ==============================
 // Supabase setup
 // ==============================
+let supabase = null;
 function supabaseReady() {
     const url = String(window.SUPABASE_URL || '');
     const key = String(window.SUPABASE_ANON_KEY || '');
@@ -116,8 +117,8 @@ function supabaseReady() {
   
 function initSupabase() {
   if (!supabaseReady()) return null;
-  window.supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-  return window.supabaseClient;
+  supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  return supabase;
 }
 
 // ==============================
@@ -191,6 +192,7 @@ function hideAppShell() {
 
 // Prevent “stuck on boot” no matter what.
 function hideStartupOverlay() {
+  try { revealContentWrapper(); } catch (_) {}
   const overlay = document.getElementById('startupOverlay');
   if (!overlay) return;
   overlay.style.transition = 'opacity 0.25s ease';
@@ -213,7 +215,7 @@ function bindAuthGate() {
 
   btnLogin.addEventListener('click', async () => {
     try {
-      if (!window.supabaseClient) {
+      if (!supabase) {
         setAuthMsg('Supabase client not initialized.', 'error');
         return;
       }
@@ -224,7 +226,7 @@ function bindAuthGate() {
         return;
       }
       setAuthMsg('Logging in…');
-      const { error } = await window.supabaseClient.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
       hideAuthGate();
@@ -241,7 +243,7 @@ function bindAuthGate() {
 
   btnSignup.addEventListener('click', async () => {
     try {
-      if (!window.supabaseClient) {
+      if (!supabase) {
         setAuthMsg('Supabase client not initialized.', 'error');
         return;
       }
@@ -252,7 +254,7 @@ function bindAuthGate() {
         return;
       }
       setAuthMsg('Creating account…');
-      const { error } = await window.supabaseClient.auth.signUp({ email, password });
+      const { error } = await supabase.auth.signUp({ email, password });
       if (error) throw error;
 
       setAuthMsg('Account created. If email confirmation is required, confirm then login.', 'info');
@@ -267,7 +269,7 @@ function ensureAuthOverlay() { /* legacy no-op: using #authGate */ }
 
 async function requireAuth() {
   // If no Supabase configured, allow local mode and show app.
-  if (!window.supabaseClient) {
+  if (!supabase) {
     hideAuthGate();
     showAppShell();
     return true;
@@ -284,7 +286,7 @@ async function requireAuth() {
     ]);
 
   try {
-    const { data } = await withTimeout(window.supabaseClient.auth.getSession());
+    const { data } = await withTimeout(supabase.auth.getSession());
     const session = data?.session;
 
     if (!session) {
@@ -305,6 +307,14 @@ async function requireAuth() {
   }
 }
 
+
+
+function revealContentWrapper() {
+  const cw = document.getElementById('contentWrapper');
+  if (!cw) return;
+  // Use a class so CSS transition can animate cleanly
+  cw.classList.add('ready');
+}
 
 // ==============================
 // Local fallback (kept)
@@ -342,11 +352,11 @@ function saveStateLocal() {
 // Supabase sync
 // ==============================
 async function syncFromSupabase() {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
 
   // Operators
   {
-    const { data, error } = await window.supabaseClient.from('operators').select('*').order('created_at', { ascending: true });
+    const { data, error } = await supabase.from('operators').select('*').order('created_at', { ascending: true });
     if (error) throw error;
     state.reps = (data || []).map(o => ({
       id: o.id,
@@ -359,21 +369,21 @@ async function syncFromSupabase() {
 
   // Orders (from intake)
   {
-    const { data, error } = await window.supabaseClient.from('orders').select('*').order('created_at', { ascending: false }).limit(250);
+    const { data, error } = await supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(250);
     if (error) throw error;
     state.orders = data || [];
   }
 
   // Assignments
   {
-    const { data, error } = await window.supabaseClient.from('assignments').select('*').order('service_date', { ascending: true });
+    const { data, error } = await supabase.from('assignments').select('*').order('service_date', { ascending: true });
     if (error) throw error;
     state.assignments = data || [];
   }
 
   // Visits (optional, your manual “Log Completed Job”)
   {
-    const { data, error } = await window.supabaseClient.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
+    const { data, error } = await supabase.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
     if (error) throw error;
     state.sales = (data || []).map(v => ({
       id: v.id,
@@ -396,7 +406,7 @@ async function syncFromSupabase() {
 }
 
 async function upsertOperator(rep) {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
   const payload = {
     id: rep.id || undefined,
     name: rep.name,
@@ -404,13 +414,13 @@ async function upsertOperator(rep) {
     is_manager: !!rep.isManager,
     active: rep.active !== false
   };
-  const { data, error } = await window.supabaseClient.from('operators').upsert(payload).select('*').single();
+  const { data, error } = await supabase.from('operators').upsert(payload).select('*').single();
   if (error) throw error;
   return data;
 }
 
 async function insertVisit(visit) {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
   const payload = {
     operator_id: visit.repId || null,
     customer_name: visit.customerName,
@@ -427,13 +437,13 @@ async function insertVisit(visit) {
     deep_clean_condition: visit.deepCleanCondition || null,
     deep_clean_total: Number(visit.deepCleanTotal || 0)
   };
-  const { data, error } = await window.supabaseClient.from('visits').insert(payload).select('*').single();
+  const { data, error } = await supabase.from('visits').insert(payload).select('*').single();
   if (error) throw error;
   return data;
 }
 
 async function assignOrder({ orderId, operatorId, serviceDate, sequence = 1 }) {
-  if (!window.supabaseClient) return;
+  if (!supabase) return;
 
   // Upsert assignment (unique(order_id) prevents dupes)
   const { data: a, error: aErr } = await supabase
@@ -672,7 +682,7 @@ function renderOrdersPanel() {
 
 window.assignOrderFromUI = async function(orderUuid) {
   try {
-    if (!window.supabaseClient) throw new Error('Supabase not configured.');
+    if (!supabase) throw new Error('Supabase not configured.');
 
     const op = String(document.getElementById(`asg_op_${orderUuid}`)?.value || '');
     const dt = String(document.getElementById(`asg_dt_${orderUuid}`)?.value || '');
@@ -768,7 +778,7 @@ window.renderRoutesPanel = renderRoutesPanel;
 
 window.refreshSupabase = async function() {
   try {
-    if (!window.supabaseClient) {
+    if (!supabase) {
       showAlert('Supabase not configured (local mode).', 'error');
       return;
     }
@@ -1117,7 +1127,7 @@ async function boot() {
     
         // Live auth changes (login/logout)
         try {
-          window.supabaseClient.auth.onAuthStateChange(async (_event, _session) => {
+          supabase.auth.onAuthStateChange(async (_event, _session) => {
             const ok = await requireAuth();
             if (!ok) return;
             await syncFromSupabase();
@@ -1157,6 +1167,8 @@ async function boot() {
       }
     } catch (_) {}
   } finally {
+    try { revealContentWrapper(); } catch (_) {}
+
     // Always dismiss startup overlay (even if boot throws or auth hangs)
     try { hideStartupOverlay(); } catch (_) {}
   }
