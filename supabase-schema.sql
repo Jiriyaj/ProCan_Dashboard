@@ -99,25 +99,25 @@ alter table public.visits enable row level security;
 -- For MVP: only authenticated users can read/write everything.
 create policy "operators_authed_all"
 on public.operators for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
 create policy "orders_authed_all"
 on public.orders for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
 create policy "assignments_authed_all"
 on public.assignments for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
 create policy "visits_authed_all"
 on public.visits for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
@@ -184,25 +184,25 @@ alter table public.settings enable row level security;
 
 create policy "customers_authed_all"
 on public.customers for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
 create policy "routes_authed_all"
 on public.routes for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
 create policy "route_stops_authed_all"
 on public.route_stops for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
 create policy "settings_authed_all"
 on public.settings for all
-to authenticated
+to anon, authenticated
 using (true)
 with check (true);
 
@@ -212,3 +212,12 @@ values
   ('cycle_anchor', to_jsonb('2026-04-01'::text)),
   ('lock_window_days', to_jsonb(7))
 on conflict (key) do nothing;
+
+
+-- =========================
+-- Grants (MVP: allow anon dashboard access)
+-- =========================
+grant usage on schema public to anon, authenticated;
+grant all on all tables in schema public to anon, authenticated;
+grant all on all sequences in schema public to anon, authenticated;
+

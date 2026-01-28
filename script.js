@@ -9,38 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
-/* ===== Background Supabase init ===== */
-(function(){
-  // Keep state on window so this file can be loaded multiple times without crashing
-  const STATE_KEY = '__PROCAN__';
-  const st = (window[STATE_KEY] = window[STATE_KEY] || {});
-  if (st.supabaseInitialized) return;
-  st.supabaseInitialized = true;
-
-  try{
-    if (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY){
-      st.supabaseClient = window.supabase.createClient(
-        window.SUPABASE_URL,
-        window.SUPABASE_ANON_KEY
-      );
-
-      // fire-and-forget auth hydrate
-      st.supabaseClient.auth.getSession()
-        .then(({data})=>{
-          const session = data && data.session ? data.session : null;
-          console.log(session ? 'Session restored' : 'No session');
-          document.dispatchEvent(new CustomEvent('auth:ready',{detail:session}));
-        })
-        .catch(err=>console.warn('Auth hydrate failed', err));
-    } else {
-      console.warn('Supabase config missing (SUPABASE_URL / SUPABASE_ANON_KEY / supabase-js)');
-      document.dispatchEvent(new CustomEvent('auth:ready',{detail:null}));
-    }
-  }catch(e){
-    console.warn('Supabase init failed', e);
-    document.dispatchEvent(new CustomEvent('auth:ready',{detail:null}));
-  }
-})();
+let supabaseClient = null;
+/* ===== Supabase init handled in boot() via initSupabase() ===== */
 'use strict';
 
 // === HARD FAILSAFE: never let the startup overlay trap the UI ===
@@ -163,10 +133,39 @@ function supabaseReady() {
 }
   
 function initSupabase() {
+  const STATE_KEY = '__PROCAN__';
+  const st = (window[STATE_KEY] = window[STATE_KEY] || {});
+
+  // Reuse singleton if already created
+  if (st.supabaseClient) {
+    supabaseClient = st.supabaseClient;
+    return supabaseClient;
+  }
+
   if (!supabaseReady()) return null;
-  supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+  // Guard against using the wrong key type
+  const key = String(window.SUPABASE_ANON_KEY || '');
+  if (key.startsWith('sb_publishable_')) {
+    console.warn('SUPABASE_ANON_KEY looks like a "publishable" key. You must paste the project anon public key from Supabase Settings → API.');
+  }
+
+  st.supabaseClient = window.supabase.createClient(
+    window.SUPABASE_URL,
+    window.SUPABASE_ANON_KEY,
+    {
+      auth: {
+        storageKey: 'procan_auth',
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      }
+    }
+  );
+  supabaseClient = st.supabaseClient;
   return supabaseClient;
 }
+
 
 // ==============================
 // UI helpers
@@ -1795,8 +1794,17 @@ async function boot() {
         });
       }
     
-      // Try Supabase
-      initSupabase();
+      // Try Supabase (singleton)
+      const sb = initSupabase();
+      if (sb) {
+        sb.auth.getSession()
+          .then(({ data }) => {
+            const session = data && data.session ? data.session : null;
+            console.log(session ? 'Session restored' : 'No session');
+            document.dispatchEvent(new CustomEvent('auth:ready', { detail: session }));
+          })
+          .catch(err => console.warn('Auth hydrate failed', err));
+      }
     
       // If supabaseClient is configured, require auth and then sync.
       // If not configured, we run in local mode.
