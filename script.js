@@ -156,9 +156,9 @@ function initSupabase() {
     {
       auth: {
         storageKey: 'procan_auth',
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false
       }
     }
   );
@@ -713,7 +713,7 @@ async function addRep() {
   }
 
   const rep = {
-    id: generateId(), // local id fallback, Supabase will overwrite
+    id: null, // let Supabase generate uuid
     name,
     payoutRate,
     isManager,
