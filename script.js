@@ -136,6 +136,10 @@ let state = {
   reps: [],       // operators
   orders: [],     // intake orders from Supabase
   assignments: [],// route assignments
+  customers: [],
+  routes: [],
+  routeStops: [],
+  settings: { cycle_anchor: '2026-04-01', lock_window_days: 7 },
   config: DEFAULT_CONFIG
 };
 
@@ -483,6 +487,62 @@ async function syncFromSupabase() {
     state.assignments = data || [];
   }
 
+  // Customers (prospecting + deposits + active accounts)
+  {
+    const { data, error } = await supabaseClient.from('customers').select('*').order('created_at', { ascending: false }).limit(500);
+    if (error) {
+      if (isMissingTableError(error, 'customers')) {
+        state.customers = [];
+      } else {
+        throw error;
+      }
+    } else {
+      state.customers = data || [];
+    }
+  }
+
+  // Routes
+  {
+    const { data, error } = await supabaseClient.from('routes').select('*').order('created_at', { ascending: true });
+    if (error) {
+      if (isMissingTableError(error, 'routes')) {
+        state.routes = [];
+      } else {
+        throw error;
+      }
+    } else {
+      state.routes = data || [];
+    }
+  }
+
+  // Route Stops
+  {
+    const { data, error } = await supabaseClient.from('route_stops').select('*').order('created_at', { ascending: true }).limit(2000);
+    if (error) {
+      if (isMissingTableError(error, 'route_stops')) {
+        state.routeStops = [];
+      } else {
+        throw error;
+      }
+    } else {
+      state.routeStops = data || [];
+    }
+  }
+
+  // Settings (single-row key/value)
+  {
+    const { data, error } = await supabaseClient.from('settings').select('*');
+    if (error) {
+      if (!isMissingTableError(error, 'settings')) throw error;
+    } else {
+      const kv = {};
+      for (const row of (data || [])) kv[row.key] = row.value;
+      if (kv.cycle_anchor) state.settings.cycle_anchor = String(kv.cycle_anchor);
+      if (kv.lock_window_days != null) state.settings.lock_window_days = Number(kv.lock_window_days);
+    }
+  }
+
+  // Visits
   // Visits (optional, your manual “Log Completed Job”)
   {
     const { data, error } = await supabaseClient.from('visits').select('*').order('service_date', { ascending: false }).limit(500);
@@ -608,6 +668,7 @@ function switchTab(tab) {
     : tab === 'insights' ? 'insightsTab'
     : tab === 'orders' ? 'ordersTab'
     : tab === 'routes' ? 'routesTab'
+    : tab === 'onboarding' ? 'onboardingTab'
     : 'allTab';
 
   document.getElementById(contentId)?.classList.add('active');
@@ -615,6 +676,7 @@ function switchTab(tab) {
   // render lazy panels
   if (tab === 'orders') renderOrdersPanel();
   if (tab === 'routes') renderRoutesPanel();
+  if (tab === 'onboarding') renderOnboardingPanel();
 }
 window.switchTab = switchTab;
 
@@ -883,6 +945,514 @@ function renderRoutesPanel() {
 }
 
 window.renderRoutesPanel = renderRoutesPanel;
+
+// ==============================
+// Onboarding + Auto-routing + Availability
+// ==============================
+
+function iso(d){ return new Date(d).toISOString().split('T')[0]; }
+function addDaysISO(dateISO, days){
+  const d = new Date(dateISO + 'T00:00:00');
+  d.setDate(d.getDate() + Number(days||0));
+  return iso(d);
+}
+function daysBetween(aISO, bISO){
+  const a = new Date(aISO + 'T00:00:00');
+  const b = new Date(bISO + 'T00:00:00');
+  return Math.floor((b - a) / (1000*60*60*24));
+}
+function cycleWeekForDate(anchorISO, dateISO){
+  const diff = daysBetween(anchorISO, dateISO);
+  if (!Number.isFinite(diff)) return 1;
+  const w = Math.floor(diff / 7);
+  const mod = ((w % 4) + 4) % 4;
+  return mod + 1; // 1..4
+}
+function nextWeekStartISO(anchorISO, fromISO, targetWeek){
+  // Find the next week-start (anchor + n*7) that is in the targetWeek (1..4) and >= fromISO
+  const fromDiff = Math.max(0, daysBetween(anchorISO, fromISO));
+  let n = Math.floor(fromDiff / 7);
+  for (let i=0; i<40; i++){
+    const candidate = addDaysISO(anchorISO, (n+i)*7);
+    const wk = cycleWeekForDate(anchorISO, candidate);
+    if (wk === targetWeek && candidate >= fromISO) return candidate;
+  }
+  return addDaysISO(fromISO, 7);
+}
+function normalizeFrequency(freq){
+  const f = String(freq||'').toLowerCase();
+  if (f.includes('bi')) return 'biweekly';
+  return 'monthly';
+}
+function getZipFromAddress(address){
+  const s = String(address||'');
+  const m = s.match(/\b(\d{5})(?:-\d{4})?\b/);
+  return m ? m[1] : '';
+}
+function inferZone(address){
+  // MVP: zone = ZIP if present; else first 10 chars of address; else 'default'
+  const zip = getZipFromAddress(address);
+  if (zip) return zip;
+  const a = String(address||'').trim();
+  if (a) return a.slice(0, 10).toUpperCase();
+  return 'default';
+}
+
+function routeServiceWeeks(route){
+  // routes.frequency_type: monthly|biweekly_a|biweekly_b
+  const t = String(route.frequency_type || route.frequency || '').toLowerCase();
+  if (t === 'monthly') return [Number(route.monthly_week || 1)];
+  if (t === 'biweekly_a') return [1,3];
+  if (t === 'biweekly_b') return [2,4];
+  // fallback based on route.service_weeks array
+  if (Array.isArray(route.service_weeks) && route.service_weeks.length) return route.service_weeks.map(Number);
+  return [1,3];
+}
+
+function routeLoad(routeId){
+  const stops = state.routeStops.filter(s => s.route_id === routeId && (s.active !== false));
+  let cans = 0;
+  const custById = new Map(state.customers.map(c => [c.id, c]));
+  for (const s of stops){
+    const c = custById.get(s.customer_id);
+    if (c) cans += Number(c.cans || 0);
+  }
+  return { stops: stops.length, cans };
+}
+
+function hasCapacity(route, neededCans=0){
+  const capStops = Number(route.capacity_stops || 0);
+  const capCans  = Number(route.capacity_cans  || 0);
+  const load = routeLoad(route.id);
+  const stopsOk = capStops ? (load.stops + 1 <= capStops) : true;
+  const cansOk  = capCans  ? (load.cans + Number(neededCans||0) <= capCans) : true;
+  return { ok: stopsOk && cansOk, load };
+}
+
+function nextServiceForRoute(route, fromISO){
+  const anchor = String(state.settings.cycle_anchor || '2026-04-01');
+  const weeks = routeServiceWeeks(route);
+  // find soonest among weeks
+  let best = null;
+  for (const w of weeks){
+    const dt = nextWeekStartISO(anchor, fromISO, Number(w));
+    if (!best || dt < best) best = dt;
+  }
+  return best || fromISO;
+}
+
+function formatAvailabilityRow(r){
+  const op = repById(r.operator_id);
+  const opName = op ? op.name : (r.operator_id ? 'Operator' : 'Unassigned');
+  const load = routeLoad(r.id);
+  const capStops = Number(r.capacity_stops || 0);
+  const capCans = Number(r.capacity_cans || 0);
+  const loadText = `${load.stops}${capStops ? ' / ' + capStops : ''} stops • ${load.cans}${capCans ? ' / ' + capCans : ''} cans`;
+  return { opName, loadText };
+}
+
+function computeAvailability({ address, frequency, cans, fromISO }){
+  const zone = inferZone(address);
+  const f = normalizeFrequency(frequency);
+  const from = String(fromISO || iso(new Date()));
+  const routes = state.routes.filter(rt => (rt.active !== false) && String(rt.zone||'') === String(zone));
+  const candidates = routes.filter(rt => {
+    const t = String(rt.frequency_type || rt.frequency || '').toLowerCase();
+    if (f === 'monthly') return t === 'monthly';
+    return (t === 'biweekly_a' || t === 'biweekly_b' || t === 'biweekly');
+  });
+
+  const options = [];
+  for (const r of candidates){
+    const cap = hasCapacity(r, cans);
+    if (!cap.ok) continue;
+    const next = nextServiceForRoute(r, from);
+    const extra = formatAvailabilityRow(r);
+    options.push({
+      route: r,
+      nextServiceWeekStart: next,
+      operatorName: extra.opName,
+      loadText: extra.loadText
+    });
+  }
+
+  options.sort((a,b)=> a.nextServiceWeekStart.localeCompare(b.nextServiceWeekStart));
+  return { zone, options };
+}
+
+async function insertCustomer(customer){
+  if (!supabaseClient) throw new Error('Supabase not configured.');
+  const payload = {
+    biz_name: customer.biz_name || null,
+    contact_name: customer.contact_name || null,
+    customer_email: customer.customer_email || null,
+    phone: customer.phone || null,
+    address: customer.address || null,
+    zone: customer.zone || inferZone(customer.address),
+    frequency: normalizeFrequency(customer.frequency || 'monthly'),
+    cans: Number(customer.cans || 0),
+    status: customer.status || 'deposited',
+    deposit_amount: Number(customer.deposit_amount || 25),
+    deposit_paid_at: customer.deposit_paid_at || new Date().toISOString(),
+  };
+  const { data, error } = await supabaseClient.from('customers').insert(payload).select('*').single();
+  if (error) throw error;
+  return data;
+}
+
+async function assignCustomerToRoute(customerId, routeId){
+  if (!supabaseClient) throw new Error('Supabase not configured.');
+  const customer = state.customers.find(c => c.id === customerId);
+  const route = state.routes.find(r => r.id === routeId);
+  if (!customer) throw new Error('Customer not found in state.');
+  if (!route) throw new Error('Route not found.');
+
+  const start = nextServiceForRoute(route, iso(new Date()));
+
+  // create stop
+  const { data: stop, error: sErr } = await supabaseClient
+    .from('route_stops')
+    .insert({ route_id: routeId, customer_id: customerId, sequence: 999, active: true })
+    .select('*')
+    .single();
+  if (sErr) throw sErr;
+
+  // update customer
+  const { error: cErr } = await supabaseClient
+    .from('customers')
+    .update({ route_id: routeId, start_week_start: start, status: 'scheduled' })
+    .eq('id', customerId);
+  if (cErr) throw cErr;
+
+  return stop;
+}
+
+async function createRoute(route){
+  if (!supabaseClient) throw new Error('Supabase not configured.');
+  const payload = {
+    name: route.name,
+    zone: route.zone,
+    frequency_type: route.frequency_type,
+    monthly_week: route.frequency_type === 'monthly' ? Number(route.monthly_week || 1) : null,
+    capacity_stops: route.capacity_stops ? Number(route.capacity_stops) : null,
+    capacity_cans: route.capacity_cans ? Number(route.capacity_cans) : null,
+    operator_id: route.operator_id || null,
+    active: true
+  };
+  const { data, error } = await supabaseClient.from('routes').insert(payload).select('*').single();
+  if (error) throw error;
+  return data;
+}
+
+function renderOnboardingPanel(){
+  const panel = document.getElementById('onboardingPanel');
+  if (!panel) return;
+
+  const today = iso(new Date());
+
+  const operatorOptions = state.reps
+    .filter(r=>r.active !== false)
+    .map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`)
+    .join('');
+
+  panel.innerHTML = `
+    <div style="display:grid; gap:12px;">
+      <div class="card">
+        <div class="card-header">
+          <h2>Instant Availability (Prospecting Mode)</h2>
+          <span class="tier-badge tier-2">Shows soonest route slot</span>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex:2;">
+            <label for="availAddress">Customer Address</label>
+            <input id="availAddress" type="text" placeholder="123 Main St, Kansas City, MO 64108" />
+            <div style="margin-top:6px; font-size:12px; opacity:.75;">
+              Tip: include ZIP for best automation. Zone is inferred from ZIP.
+            </div>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="availFreq">Frequency</label>
+            <select id="availFreq">
+              <option value="biweekly">Bi-weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label for="availCans"># Cans</label>
+            <input id="availCans" type="number" min="1" step="1" value="8" />
+          </div>
+        </div>
+
+        <div class="form-row" style="align-items:end;">
+          <button class="btn-primary" type="button" id="btnCheckAvail">Check availability</button>
+          <button class="btn-secondary" type="button" id="btnQuickDeposit">Add as $25 deposit</button>
+          <div style="flex:1;"></div>
+        </div>
+
+        <div id="availResults" style="margin-top:12px;"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Deposits Queue</h2>
+          <span class="tier-badge tier-1">Auto-suggests routes</span>
+        </div>
+        <div id="depositQueue"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Routes Manager</h2>
+          <span class="tier-badge tier-3">Capacity + operator</span>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="newRouteName">Route Name</label>
+            <input id="newRouteName" type="text" placeholder="KC-64108-BW-A" />
+          </div>
+          <div class="form-group">
+            <label for="newRouteZone">Zone (ZIP)</label>
+            <input id="newRouteZone" type="text" placeholder="64108" />
+          </div>
+          <div class="form-group">
+            <label for="newRouteFreqType">Route Type</label>
+            <select id="newRouteFreqType">
+              <option value="biweekly_a">Bi-weekly A (Weeks 1 & 3)</option>
+              <option value="biweekly_b">Bi-weekly B (Weeks 2 & 4)</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          <div class="form-group" id="monthlyWeekWrap" style="display:none;">
+            <label for="newRouteMonthlyWeek">Monthly Week</label>
+            <select id="newRouteMonthlyWeek">
+              <option value="1">Week 1</option>
+              <option value="2">Week 2</option>
+              <option value="3">Week 3</option>
+              <option value="4">Week 4</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="newRouteCapStops">Capacity (stops)</label>
+            <input id="newRouteCapStops" type="number" min="1" step="1" placeholder="25" />
+          </div>
+          <div class="form-group">
+            <label for="newRouteCapCans">Capacity (cans)</label>
+            <input id="newRouteCapCans" type="number" min="1" step="1" placeholder="200" />
+          </div>
+          <div class="form-group">
+            <label for="newRouteOperator">Operator</label>
+            <select id="newRouteOperator">
+              <option value="">Unassigned</option>
+              ${operatorOptions}
+            </select>
+          </div>
+          <button class="btn-secondary" type="button" id="btnCreateRoute" style="align-self:end;">Create Route</button>
+        </div>
+
+        <div style="margin-top:10px; opacity:.75; font-size:12px;">
+          Cycle anchor: <strong>${escapeHtml(state.settings.cycle_anchor || '2026-04-01')}</strong> • Lock window: <strong>${Number(state.settings.lock_window_days||7)} days</strong>
+        </div>
+
+        <div id="routesTable" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  `;
+
+  // Handlers
+  const freqTypeEl = document.getElementById('newRouteFreqType');
+  const monthlyWrap = document.getElementById('monthlyWeekWrap');
+  if (freqTypeEl && monthlyWrap){
+    const sync = () => { monthlyWrap.style.display = (freqTypeEl.value === 'monthly') ? 'block' : 'none'; };
+    freqTypeEl.addEventListener('change', sync);
+    sync();
+  }
+
+  const resEl = document.getElementById('availResults');
+  document.getElementById('btnCheckAvail')?.addEventListener('click', ()=>{
+    const address = String(document.getElementById('availAddress')?.value || '').trim();
+    const frequency = String(document.getElementById('availFreq')?.value || 'biweekly');
+    const cans = Number(document.getElementById('availCans')?.value || 0);
+    if (!address){
+      if (resEl) resEl.innerHTML = `<div class="empty-state">Enter an address (include ZIP if possible).</div>`;
+      return;
+    }
+    const out = computeAvailability({ address, frequency, cans, fromISO: today });
+    if (!out.options.length){
+      if (resEl) resEl.innerHTML = `
+        <div class="empty-state">No available routes found for zone <strong>${escapeHtml(out.zone)}</strong>. Create a route below, or change zone/address.</div>
+      `;
+      return;
+    }
+    if (resEl) resEl.innerHTML = `
+      <div style="opacity:.8; font-size:12px; margin-bottom:10px;">Zone inferred: <strong>${escapeHtml(out.zone)}</strong></div>
+      <div style="display:grid; gap:10px;">
+        ${out.options.slice(0,5).map(o=>{
+          const rt = o.route;
+          const type = String(rt.frequency_type || rt.frequency || '');
+          const cap = hasCapacity(rt, cans);
+          const badge = type === 'monthly' ? 'Monthly' : (type === 'biweekly_a' ? 'Bi-weekly A' : 'Bi-weekly B');
+          return `
+            <div style="border:1px solid rgba(255,255,255,0.10); border-radius:14px; padding:12px; background: rgba(0,0,0,0.18);">
+              <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+                <div style="font-weight:800;">${escapeHtml(rt.name || 'Route')}</div>
+                <span class="tier-badge tier-2">${badge}</span>
+              </div>
+              <div style="opacity:.8; font-size:12px; margin-top:6px;">Next service week starts: <strong>${escapeHtml(o.nextServiceWeekStart)}</strong></div>
+              <div style="opacity:.75; font-size:12px; margin-top:6px;">Operator: ${escapeHtml(o.operatorName)} • Load: ${escapeHtml(o.loadText)}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  });
+
+  document.getElementById('btnQuickDeposit')?.addEventListener('click', async ()=>{
+    try{
+      const address = String(document.getElementById('availAddress')?.value || '').trim();
+      const frequency = String(document.getElementById('availFreq')?.value || 'biweekly');
+      const cans = Number(document.getElementById('availCans')?.value || 0);
+      if (!address) throw new Error('Enter an address first.');
+      const zone = inferZone(address);
+
+      const saved = await insertCustomer({
+        address,
+        zone,
+        frequency,
+        cans,
+        deposit_amount: 25,
+        status: 'deposited'
+      });
+
+      showAlert('✅ Deposit customer added', 'success');
+      await syncFromSupabase();
+      renderOnboardingPanel();
+    }catch(e){
+      console.error(e);
+      showAlert(`Add deposit failed: ${e?.message || 'error'}`, 'error');
+    }
+  });
+
+  document.getElementById('btnCreateRoute')?.addEventListener('click', async ()=>{
+    try{
+      const name = String(document.getElementById('newRouteName')?.value || '').trim();
+      const zone = String(document.getElementById('newRouteZone')?.value || '').trim();
+      const frequency_type = String(document.getElementById('newRouteFreqType')?.value || 'biweekly_a');
+      const monthly_week = Number(document.getElementById('newRouteMonthlyWeek')?.value || 1);
+      const capacity_stops = Number(document.getElementById('newRouteCapStops')?.value || 0) || null;
+      const capacity_cans = Number(document.getElementById('newRouteCapCans')?.value || 0) || null;
+      const operator_id = String(document.getElementById('newRouteOperator')?.value || '');
+
+      if (!name) throw new Error('Route name required.');
+      if (!zone) throw new Error('Zone (ZIP) required.');
+
+      await createRoute({ name, zone, frequency_type, monthly_week, capacity_stops, capacity_cans, operator_id: operator_id || null });
+      showAlert('✅ Route created', 'success');
+      await syncFromSupabase();
+      renderOnboardingPanel();
+    }catch(e){
+      console.error(e);
+      showAlert(`Create route failed: ${e?.message || 'error'}`, 'error');
+    }
+  });
+
+  // Deposit queue render
+  renderDepositQueue();
+  renderRoutesTable();
+}
+
+function renderDepositQueue(){
+  const wrap = document.getElementById('depositQueue');
+  if (!wrap) return;
+
+  const deposited = state.customers.filter(c => String(c.status||'').toLowerCase() === 'deposited' || (String(c.status||'').toLowerCase()==='scheduled' && !c.route_id));
+  if (!deposited.length){
+    wrap.innerHTML = `<div class="empty-state">No deposited customers waiting for routing.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `<div style="display:grid; gap:10px;">
+    ${deposited.map(c=>{
+      const address = c.address || '';
+      const freq = normalizeFrequency(c.frequency || 'monthly');
+      const cans = Number(c.cans || 0);
+      const out = computeAvailability({ address, frequency: freq, cans, fromISO: iso(new Date()) });
+      const top = out.options[0];
+      const suggestion = top ? `${top.route.name} • ${top.nextServiceWeekStart}` : `No route available in zone ${out.zone}`;
+      const btn = top ? `<button class="btn-primary btn-small" type="button" onclick="assignSuggested('${c.id}','${top.route.id}')">Assign</button>` : '';
+      return `
+        <div style="border:1px solid rgba(255,255,255,0.10); border-radius:14px; padding:12px; background: rgba(0,0,0,0.18);">
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <div>
+              <div style="font-weight:800;">${escapeHtml(c.biz_name || 'Deposited Customer')}</div>
+              <div style="opacity:.8; font-size:12px; margin-top:4px;">${escapeHtml(address)}</div>
+              <div style="opacity:.75; font-size:12px; margin-top:6px;">${escapeHtml(freq)} • Cans: ${escapeHtml(cans)} • Deposit: ${money(c.deposit_amount || 25)}</div>
+              <div style="opacity:.85; font-size:12px; margin-top:8px;">Suggested: <strong>${escapeHtml(suggestion)}</strong></div>
+            </div>
+            <div style="text-align:right; display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+              ${btn}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('')}
+  </div>`;
+}
+
+window.assignSuggested = async function(customerId, routeId){
+  try{
+    await assignCustomerToRoute(customerId, routeId);
+    showAlert('✅ Customer scheduled', 'success');
+    await syncFromSupabase();
+    renderOnboardingPanel();
+  }catch(e){
+    console.error(e);
+    showAlert(`Assign failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+function renderRoutesTable(){
+  const wrap = document.getElementById('routesTable');
+  if (!wrap) return;
+  if (!state.routes.length){
+    wrap.innerHTML = `<div class="empty-state">No routes yet. Create one above.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <div style="display:grid; gap:10px;">
+      ${state.routes.map(r=>{
+        const load = routeLoad(r.id);
+        const type = String(r.frequency_type || r.frequency || '');
+        const badge = type === 'monthly' ? 'Monthly' : (type === 'biweekly_a' ? 'Bi-weekly A' : 'Bi-weekly B');
+        const capStops = Number(r.capacity_stops || 0);
+        const capCans = Number(r.capacity_cans || 0);
+        const op = repById(r.operator_id);
+        const opName = op ? op.name : 'Unassigned';
+        return `
+          <div style="border:1px solid rgba(255,255,255,0.10); border-radius:14px; padding:12px; background: rgba(0,0,0,0.18);">
+            <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+              <div>
+                <div style="font-weight:800;">${escapeHtml(r.name || 'Route')}</div>
+                <div style="opacity:.8; font-size:12px; margin-top:4px;">Zone: <strong>${escapeHtml(r.zone || 'default')}</strong> • Operator: ${escapeHtml(opName)}</div>
+              </div>
+              <span class="tier-badge tier-2">${badge}</span>
+            </div>
+            <div style="opacity:.75; font-size:12px; margin-top:8px;">
+              Load: ${load.stops}${capStops ? ' / ' + capStops : ''} stops • ${load.cans}${capCans ? ' / ' + capCans : ''} cans
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+
 
 window.refreshSupabase = async function() {
   try {

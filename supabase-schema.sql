@@ -120,3 +120,95 @@ on public.visits for all
 to authenticated
 using (true)
 with check (true);
+
+
+-- =========================
+-- Routing + Onboarding (v2)
+-- =========================
+
+create table if not exists public.routes (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  zone text not null default 'default',
+
+  frequency_type text not null default 'biweekly_a', -- biweekly_a|biweekly_b|monthly
+  monthly_week int, -- 1..4 when monthly
+
+  operator_id uuid references public.operators(id) on delete set null,
+  capacity_stops int,
+  capacity_cans int,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.customers (
+  id uuid primary key default gen_random_uuid(),
+  biz_name text,
+  contact_name text,
+  customer_email text,
+  phone text,
+  address text,
+  zone text not null default 'default',
+  frequency text not null default 'monthly', -- monthly|biweekly
+  cans int not null default 0,
+
+  status text not null default 'deposited', -- lead|deposited|scheduled|active|paused|cancelled
+  deposit_amount numeric not null default 25,
+  deposit_paid_at timestamptz,
+  route_id uuid references public.routes(id) on delete set null,
+  start_week_start date, -- week-start date (cycle week start) for first service
+
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.route_stops (
+  id uuid primary key default gen_random_uuid(),
+  route_id uuid not null references public.routes(id) on delete cascade,
+  customer_id uuid not null references public.customers(id) on delete cascade,
+  sequence int not null default 999,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  unique(route_id, customer_id)
+);
+
+create table if not exists public.settings (
+  key text primary key,
+  value jsonb not null
+);
+
+-- Enable RLS
+alter table public.customers enable row level security;
+alter table public.routes enable row level security;
+alter table public.route_stops enable row level security;
+alter table public.settings enable row level security;
+
+create policy "customers_authed_all"
+on public.customers for all
+to authenticated
+using (true)
+with check (true);
+
+create policy "routes_authed_all"
+on public.routes for all
+to authenticated
+using (true)
+with check (true);
+
+create policy "route_stops_authed_all"
+on public.route_stops for all
+to authenticated
+using (true)
+with check (true);
+
+create policy "settings_authed_all"
+on public.settings for all
+to authenticated
+using (true)
+with check (true);
+
+-- Seed default settings if not present
+insert into public.settings (key, value)
+values
+  ('cycle_anchor', to_jsonb('2026-04-01'::text)),
+  ('lock_window_days', to_jsonb(7))
+on conflict (key) do nothing;
