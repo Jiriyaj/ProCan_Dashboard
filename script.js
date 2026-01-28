@@ -660,15 +660,10 @@ function switchTab(tab) {
   if (btn) btn.classList.add('active');
 
   const contentId =
-    tab === 'all' ? 'allTab'
-    : tab === 'byRep' ? 'byRepTab'
-    : tab === 'weekly' ? 'weeklyTab'
-    : tab === 'payments' ? 'paymentsTab'
-    : tab === 'insights' ? 'insightsTab'
-    : tab === 'orders' ? 'ordersTab'
+    tab === 'orders' ? 'ordersTab'
     : tab === 'routes' ? 'routesTab'
     : tab === 'onboarding' ? 'onboardingTab'
-    : 'allTab';
+    : 'ordersTab';
 
   document.getElementById(contentId)?.classList.add('active');
 
@@ -678,6 +673,41 @@ function switchTab(tab) {
   if (tab === 'onboarding') renderOnboardingPanel();
 }
 window.switchTab = switchTab;
+
+// ==============================
+// KPIs (Orders-focused)
+// ==============================
+function renderOpsKpis(){
+  const paidEl = document.getElementById('kpiPaidOrders');
+  const unassignedEl = document.getElementById('kpiUnassigned');
+  const scheduledEl = document.getElementById('kpiScheduled');
+  const opsEl = document.getElementById('kpiOperators');
+
+  if (!paidEl && !unassignedEl && !scheduledEl && !opsEl) return;
+
+  const orders = Array.isArray(state.orders) ? state.orders : [];
+  const assignments = Array.isArray(state.assignments) ? state.assignments : [];
+  const reps = Array.isArray(state.reps) ? state.reps : [];
+
+  const paidOrders = orders.filter(o => String(o.status || '').toLowerCase() === 'paid').length;
+
+  const assignedOrderIds = new Set(assignments.map(a => a.order_id));
+  const unassignedOrders = orders.filter(o => !assignedOrderIds.has(o.id)).length;
+
+  const today = new Date();
+  const in7 = new Date(today.getTime() + 7*24*60*60*1000);
+  const scheduledNext7 = assignments.filter(a => {
+    const d = new Date(String(a.service_date));
+    return !isNaN(d) && d >= today && d <= in7;
+  }).length;
+
+  const activeOps = reps.filter(r => r.active !== false).length;
+
+  if (paidEl) paidEl.textContent = String(paidOrders);
+  if (unassignedEl) unassignedEl.textContent = String(unassignedOrders);
+  if (scheduledEl) scheduledEl.textContent = String(scheduledNext7);
+  if (opsEl) opsEl.textContent = String(activeOps);
+}
 
 // ==============================
 // Render: Operators select/list (uses existing DOM ids)
@@ -1748,6 +1778,9 @@ async function handleSaleSubmit(e) {
 function renderEverything() {
   renderRepSelect();
   renderRepsList();
+
+  // Orders-focused KPIs
+  try { renderOpsKpis(); } catch (e) {}
 
   // If you already have these render functions in your original dashboard script,
   // keep them and we’ll call them safely (only if they exist).

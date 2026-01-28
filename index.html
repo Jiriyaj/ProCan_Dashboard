@@ -82,129 +82,26 @@
 
             <div class="card">
               <div class="card-header">
-                <h2>Log Completed Job</h2>
-                <span class="tier-badge tier-2">Revenue auto-calculated</span>
+                <h2>Orders Flow</h2>
+                <span class="tier-badge tier-2">Intake → Supabase → Dashboard</span>
               </div>
 
-              <form id="saleForm">
-                <div class="form-group">
-                  <label for="customerName">Account / Customer</label>
-                  <input id="customerName" type="text" placeholder="e.g., Joe’s BBQ - Downtown" required />
+              <div style="opacity:.85; line-height:1.5;">
+                <div style="margin-bottom:10px;">
+                  This dashboard no longer accepts manual job submissions.
                 </div>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="saleDate">Service Date</label>
-                    <input id="saleDate" type="date" required />
-                  </div>
-                  <div class="form-group">
-                    <label for="saleRep">Operator</label>
-                    <select id="saleRep" required></select>
-                  </div>
+                <ul style="margin:0; padding-left:18px;">
+                  <li><b>All orders come from the Intake site</b> (Card or Cash).</li>
+                  <li>Use <b>Orders</b> to monitor incoming customers.</li>
+                  <li>Use <b>Routes</b> to view daily assignments.</li>
+                  <li>Use <b>Onboarding</b> to check availability + assign deposits.</li>
+                </ul>
+                <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+                  <button class="btn-primary" type="button" onclick="switchTab('orders')">Open Orders</button>
+                  <button class="btn-secondary" type="button" onclick="switchTab('routes')">Open Routes</button>
+                  <button class="btn-secondary" type="button" onclick="switchTab('onboarding')">Open Onboarding</button>
                 </div>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="productLine">Service Type</label>
-                    <select id="productLine" required>
-                      <option value="">Select service...</option>
-                      <option>Trash Can Cleaning - Biweekly</option>
-                      <option>Trash Can Cleaning - Monthly</option>
-                      <option>Dumpster Pad Cleaning - Weekly</option>
-                      <option>Dumpster Pad Cleaning - Biweekly</option>
-                      <option>Dumpster Pad Cleaning - Monthly</option>
-                    </select>
-                  </div>
-                  <div class="form-group">
-                    <label for="units">Quantity</label>
-                    <input id="units" type="number" min="1" step="1" value="1" required />
-                    <div style="margin-top:6px; font-size:12px; opacity:.75;">
-                      For pad cleaning, quantity isn’t used for pricing (still logs a number for your notes).
-                    </div>
-                  </div>
-                </div>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="billingFrequency">Client Billing</label>
-                    <select id="billingFrequency">
-                      <option value="monthly">Monthly</option>
-                      <option value="quarterly">Quarterly (5% off)</option>
-                      <option value="annual">Annual (10% off, $1k+/mo)</option>
-                    </select>
-                  </div>
-                  <div class="form-group">
-                    <label for="locationsCount"># of Locations</label>
-                    <input id="locationsCount" type="number" min="1" step="1" value="1" />
-                  </div>
-                </div>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="jobType">Job Type</label>
-                    <select id="jobType">
-                      <option value="recurring">Recurring (subscription)</option>
-                      <option value="oneTime">One-time Service</option>
-                    </select>
-                  </div>
-
-                  <div class="form-group">
-                    <label>Operator Payout Status</label>
-                    <div class="toggle-group">
-                      <button type="button" class="toggle-btn active" data-value="due">Due</button>
-                      <button type="button" class="toggle-btn" data-value="paid">Paid Out</button>
-                      <button type="button" class="toggle-btn" data-value="cancelled">Cancelled</button>
-                    </div>
-                    <input type="hidden" id="activationStatus" value="due" />
-                  </div>
-                </div>
-
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="revenue">Visit Revenue (auto)</label>
-                    <input id="revenue" type="number" step="0.01" placeholder="Auto-calculated" readonly />
-                  </div>
-                  <div class="form-group">
-                    <label for="fees">Costs (optional)</label>
-                    <input id="fees" type="number" step="0.01" placeholder="Chemicals, fuel, etc." />
-                  </div>
-                </div>
-
-                <div class="card" style="margin: 0 0 18px 0; padding: 14px;">
-                  <div style="display:flex; gap:10px; align-items:center;">
-                    <input id="deepClean" type="checkbox" style="width:auto;" />
-                    <label for="deepClean" style="margin:0;">One-time Initial Deep Clean (first service only)</label>
-                  </div>
-                  <div class="form-row" style="margin-top:12px;">
-                    <div class="form-group" style="margin-bottom:0;">
-                      <label for="deepCleanCondition">Can Condition</label>
-                      <select id="deepCleanCondition">
-                        <option value="standard">Standard ($35/can)</option>
-                        <option value="heavy">Heavy ($50/can)</option>
-                        <option value="extreme">Extreme ($75/can)</option>
-                      </select>
-                    </div>
-                    <div class="form-group" style="margin-bottom:0;">
-                      <label>Included with service</label>
-                      <div style="font-size:12px; opacity:.8; padding-top:10px;">
-                        Deodorizer is included by default. No other add-ons.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="form-group">
-                  <label>Pricing Breakdown</label>
-                  <div id="pricingPreview" style="padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: rgba(0,0,0,0.22);"></div>
-                </div>
-
-                <div class="form-group">
-                  <label for="notes">Notes (optional)</label>
-                  <input id="notes" type="text" placeholder="Gate code, special instructions, etc." />
-                </div>
-
-                <button type="submit" class="btn-primary">Add Job</button>
-              </form>
+              </div>
             </div>
 
             <div class="card">
@@ -252,44 +149,31 @@
               </div>
 
               <div class="summary-grid">
-                <div class="summary-card" id="totalGrossCard">
-                  <div class="summary-label" id="totalGrossLabel">Total Gross</div>
-                  <div class="summary-value" id="totalSales">$0.00</div>
-                </div>
-                <div class="summary-card" id="periodCard">
-                  <div class="summary-label" id="periodLabel">This Pay Period Profit</div>
-                  <div class="summary-value" id="weekSales">$0.00</div>
+                <div class="summary-card">
+                  <div class="summary-label">Paid Orders</div>
+                  <div class="summary-value" id="kpiPaidOrders">0</div>
                 </div>
                 <div class="summary-card">
-                  <div class="summary-label">Total Jobs</div>
-                  <div class="summary-value" id="totalCommission">0</div>
+                  <div class="summary-label">Unassigned Orders</div>
+                  <div class="summary-value" id="kpiUnassigned">0</div>
                 </div>
                 <div class="summary-card">
-                  <div class="summary-label">Total Payouts</div>
-                  <div class="summary-value" id="weekCommission">$0.00</div>
+                  <div class="summary-label">Scheduled (next 7 days)</div>
+                  <div class="summary-value" id="kpiScheduled">0</div>
+                </div>
+                <div class="summary-card">
+                  <div class="summary-label">Active Operators</div>
+                  <div class="summary-value" id="kpiOperators">0</div>
                 </div>
               </div>
 
               <div class="tabs" style="margin-top: 18px;">
-                <button class="tab active" onclick="switchTab('all')">All Jobs</button>
-                <button class="tab" onclick="switchTab('byRep')">By Operator</button>
-                <button class="tab" onclick="switchTab('weekly')">This Pay Period</button>
-                <button class="tab" onclick="switchTab('payments')">Payouts</button>
-                <button class="tab" onclick="switchTab('insights')">Insights</button>
-                <button class="tab" onclick="switchTab('orders')">Orders</button>
+                <button class="tab active" onclick="switchTab('orders')">Orders</button>
                 <button class="tab" onclick="switchTab('routes')">Routes</button>
                 <button class="tab" onclick="switchTab('onboarding')">Onboarding</button>
               </div>
 
-              <div class="tab-content active" id="allTab">
-                <div id="salesTable"></div>
-              </div>
-
-              <div class="tab-content" id="byRepTab">
-                <div id="repBreakdown"></div>
-              </div>
-
-              <div class="tab-content" id="ordersTab">
+              <div class="tab-content active" id="ordersTab">
                 <div id="ordersPanel"></div>
               </div>
               
@@ -301,17 +185,6 @@
                 <div id="onboardingPanel"></div>
               </div>              
 
-              <div class="tab-content" id="weeklyTab">
-                <div id="weeklyBreakdown"></div>
-              </div>
-
-              <div class="tab-content" id="paymentsTab">
-                <div id="paymentsPanel"></div>
-              </div>
-
-              <div class="tab-content" id="insightsTab">
-                <div id="insightsPanel"></div>
-              </div>
 
             </div>
           </div>
