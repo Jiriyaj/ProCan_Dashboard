@@ -980,11 +980,22 @@ window.renderRoutesPanel = renderRoutesPanel;
 // ==============================
 
 function iso(d){ return new Date(d).toISOString().split('T')[0]; }
+const DOW_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
 function addDaysISO(dateISO, days){
   const d = new Date(dateISO + 'T00:00:00');
   d.setDate(d.getDate() + Number(days||0));
   return iso(d);
 }
+
+function windowRangeForRoute(route, weekStartISO){
+  const s = Number(route.window_start_dow ?? 1);
+  const e = Number(route.window_end_dow ?? 4);
+  const start = addDaysISO(weekStartISO, Math.max(0, Math.min(6, s)));
+  const end = addDaysISO(weekStartISO, Math.max(0, Math.min(6, e)));
+  return { start, end };
+}
+
 function daysBetween(aISO, bISO){
   const a = new Date(aISO + 'T00:00:00');
   const b = new Date(bISO + 'T00:00:00');
@@ -1166,6 +1177,8 @@ async function createRoute(route){
     capacity_stops: route.capacity_stops ? Number(route.capacity_stops) : null,
     capacity_cans: route.capacity_cans ? Number(route.capacity_cans) : null,
     operator_id: route.operator_id || null,
+    window_start_dow: Number(route.window_start_dow ?? 1),
+    window_end_dow: Number(route.window_end_dow ?? 4),
     active: true
   };
   const { data, error } = await supabaseClient.from('routes').insert(payload).select('*').single();
@@ -1253,7 +1266,21 @@ function renderOnboardingPanel(){
               <option value="monthly">Monthly</option>
             </select>
           </div>
-          <div class="form-group" id="monthlyWeekWrap" style="display:none;">
+          
+          <div class="form-group">
+            <label for="newRouteWinStart">Service Window Start</label>
+            <select id="newRouteWinStart">
+              ${DOW_LABELS.map((d,i)=>`<option value="${i}" ${i===1?'selected':''}>${d}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="newRouteWinEnd">Service Window End</label>
+            <select id="newRouteWinEnd">
+              ${DOW_LABELS.map((d,i)=>`<option value="${i}" ${i===4?'selected':''}>${d}</option>`).join('')}
+            </select>
+          </div>
+
+<div class="form-group" id="monthlyWeekWrap" style="display:none;">
             <label for="newRouteMonthlyWeek">Monthly Week</label>
             <select id="newRouteMonthlyWeek">
               <option value="1">Week 1</option>
@@ -1331,7 +1358,7 @@ function renderOnboardingPanel(){
                 <div style="font-weight:800;">${escapeHtml(rt.name || 'Route')}</div>
                 <span class="tier-badge tier-2">${badge}</span>
               </div>
-              <div style="opacity:.8; font-size:12px; margin-top:6px;">Next service week starts: <strong>${escapeHtml(o.nextServiceWeekStart)}</strong></div>
+              <div style="opacity:.8; font-size:12px; margin-top:6px;">Next service window: <strong>${escapeHtml(windowRangeForRoute(rt, o.nextServiceWeekStart).start)}</strong> → <strong>${escapeHtml(windowRangeForRoute(rt, o.nextServiceWeekStart).end)}</strong></div>
               <div style="opacity:.75; font-size:12px; margin-top:6px;">Operator: ${escapeHtml(o.operatorName)} • Load: ${escapeHtml(o.loadText)}</div>
             </div>
           `;
@@ -1375,11 +1402,13 @@ function renderOnboardingPanel(){
       const capacity_stops = Number(document.getElementById('newRouteCapStops')?.value || 0) || null;
       const capacity_cans = Number(document.getElementById('newRouteCapCans')?.value || 0) || null;
       const operator_id = String(document.getElementById('newRouteOperator')?.value || '');
+      const window_start_dow = Number(document.getElementById('newRouteWinStart')?.value ?? 1);
+      const window_end_dow = Number(document.getElementById('newRouteWinEnd')?.value ?? 4);
 
       if (!name) throw new Error('Route name required.');
       if (!zone) throw new Error('Zone (ZIP) required.');
 
-      await createRoute({ name, zone, frequency_type, monthly_week, capacity_stops, capacity_cans, operator_id: operator_id || null });
+      await createRoute({ name, zone, frequency_type, monthly_week, capacity_stops, capacity_cans, operator_id: operator_id || null, window_start_dow, window_end_dow });
       showAlert('✅ Route created', 'success');
       await syncFromSupabase();
       renderOnboardingPanel();

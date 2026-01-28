@@ -221,3 +221,64 @@ grant usage on schema public to anon, authenticated;
 grant all on all tables in schema public to anon, authenticated;
 grant all on all sequences in schema public to anon, authenticated;
 
+
+
+
+-- =========================
+-- Schema extensions for deposits + saved payment methods (v3)
+-- =========================
+do $$
+begin
+  -- orders extensions
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='stripe_customer_id') then
+    alter table public.orders add column stripe_customer_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='stripe_payment_intent_id') then
+    alter table public.orders add column stripe_payment_intent_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='stripe_subscription_id') then
+    alter table public.orders add column stripe_subscription_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='is_deposit') then
+    alter table public.orders add column is_deposit boolean not null default false;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='deposit_amount') then
+    alter table public.orders add column deposit_amount numeric;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='normal_due_today') then
+    alter table public.orders add column normal_due_today numeric;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='orders' and column_name='checkout_mode') then
+    alter table public.orders add column checkout_mode text; -- payment|subscription|setup
+  end if;
+
+  -- customers extensions
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='customers' and column_name='stripe_customer_id') then
+    alter table public.customers add column stripe_customer_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='customers' and column_name='stripe_subscription_id') then
+    alter table public.customers add column stripe_subscription_id text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='customers' and column_name='pm_saved') then
+    alter table public.customers add column pm_saved boolean not null default false;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='customers' and column_name='preferred_window') then
+    alter table public.customers add column preferred_window text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='customers' and column_name='start_after') then
+    alter table public.customers add column start_after date;
+  end if;
+
+  -- routes service window extensions
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='routes' and column_name='window_start_dow') then
+    alter table public.routes add column window_start_dow int not null default 1; -- 0=Sun..6=Sat (cycle-week offset)
+  end if;
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='routes' and column_name='window_end_dow') then
+    alter table public.routes add column window_end_dow int not null default 4;
+  end if;
+
+  -- unique key for customer upserts
+  if not exists (select 1 from pg_constraint where conname='customers_stripe_customer_id_key') then
+    alter table public.customers add constraint customers_stripe_customer_id_key unique (stripe_customer_id);
+  end if;
+end$$;
