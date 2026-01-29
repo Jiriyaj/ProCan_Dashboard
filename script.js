@@ -746,7 +746,28 @@ function generateId() {
 // ==============================
 // Tabs
 // ==============================
+
+function __setActiveNav(tab){
+  try{
+    const map = {dispatch:'Dispatch', leads:'Leads', map:'Map', operators:'Operators'};
+    const t = document.getElementById('pageTitle');
+    if(t) t.textContent = map[tab] || 'ProCan';
+    const sub = document.getElementById('pageSubtle');
+    if(sub){
+      sub.textContent = (tab==='dispatch') ? "Today’s operations" :
+                        (tab==='leads') ? "Prospecting + follow-ups" :
+                        (tab==='map') ? "Visual routes + pins" :
+                        (tab==='operators') ? "Team + payouts" : "";
+    }
+    ['dispatch','leads','map','operators'].forEach(k=>{
+      const b=document.getElementById('nav-'+k);
+      if(b) b.classList.toggle('active', k===tab);
+    });
+  }catch(_){}
+}
+
 function switchTab(tab) {
+  __setActiveNav(tab);
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
@@ -870,6 +891,88 @@ async function addJobEvent(jobId, event_type, detail){
   try{
     await supabaseClient.from('job_events').insert({ job_id: jobId, actor_user_id: (await supabaseClient.auth.getUser())?.data?.user?.id || null, event_type, detail: detail || {} });
   } catch(_){ /* non-fatal */ }
+}
+
+
+async function autofillJobsFromOrders(dateStr){
+  // Housecall-style automation: pull paid/new orders (from intake webhook) and ensure jobs exist for this date.
+  if(!supabaseClient) return;
+  const date = dateStr || new Date().toISOString().slice(0,10);
+  await autofillJobsFromOrders(date);
+  // Fetch jobs for the date once (to avoid dupes)
+  const { data: existingJobs, error: ejErr } = await supabaseClient
+    .from('jobs')
+    .select('id,address,lat,lng,operator_id,job_date,status')
+    .eq('job_date', date)
+    .limit(5000);
+  if(ejErr){
+    console.warn('autofill: jobs fetch error', ejErr);
+    return;
+  }
+  const existsKey = new Set((existingJobs||[]).map(j => (String(j.address||'').trim().toLowerCase())));
+  // Orders table is written by intake webhook
+  const { data: orders, error: oErr } = await supabaseClient
+    .from('orders')
+    .select('id,order_id,biz_name,address,preferred_service_day,start_date,cadence,notes,status')
+    .in('status',['new','active','deposited','paid'])
+    .order('created_at',{ascending:false})
+    .limit(2000);
+  if(oErr){
+    console.warn('autofill: orders fetch error', oErr);
+    return;
+  }
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const dow = dayNames[new Date(date+'T12:00:00').getDay()];
+  const normalize = (s)=>String(s||'').trim().toLowerCase();
+  const matchPreferred = (pref)=>{
+    const p=normalize(pref);
+    if(!p) return true; // if no pref, allow (you can assign manually)
+    if(p.startsWith(dow.slice(0,3).toLowerCase())) return true;
+    if(p===normalize(dow)) return true;
+    return false;
+  };
+  const canStart = (start)=>{
+    const s=String(start||'').slice(0,10);
+    return !s || s<=date;
+  };
+
+  // Build insert rows
+  const toInsert=[];
+  for(const o of (orders||[])){
+    const address = String(o.address||'').trim();
+    if(!address) continue;
+    if(!canStart(o.start_date)) continue;
+    if(!matchPreferred(o.preferred_service_day)) continue;
+    const key = address.toLowerCase();
+    if(existsKey.has(key)) continue;
+
+    // attempt to geocode now (best effort)
+    let lat=null,lng=null;
+    try{
+      const geo = await __geocodeAddress(address);
+      if(geo){ lat=geo.lat; lng=geo.lng; }
+    }catch(_){}
+    toInsert.push({
+      job_date: date,
+      address,
+      lat, lng,
+      status: 'scheduled',
+      stop_order: 0,
+      notes: (o.biz_name ? `Order: ${o.biz_name}` : 'Order') + (o.order_id ? ` (#${o.order_id})` : '') + (o.notes ? ` — ${o.notes}` : '')
+    });
+    existsKey.add(key);
+    // throttle inserts size per render
+    if(toInsert.length>=30) break;
+  }
+
+  if(toInsert.length){
+    const { error: insErr } = await supabaseClient.from('jobs').insert(toInsert);
+    if(insErr){
+      console.warn('autofill: insert jobs error', insErr);
+    }else{
+      console.log('autofill: inserted jobs', toInsert.length);
+    }
+  }
 }
 
 async function renderDispatchPanel(){
@@ -1276,6 +1379,9 @@ window.generateDailyJobsFromRoutes = async function(){
     const wk = cycleWeekForDate(anchor, d);
     const weekStart = nextWeekStartISO(anchor, d, wk);
 
+    if (!(state.routes||[]).length || !(state.customers||[]).length){
+      showAlert('Routes/customers not configured yet. Add routes & customers (from intake) or schedule leads manually.', 'error');
+    }
     const dueCustomers = (state.customers||[])
       .filter(c => !!c.route_id)
       .filter(c => {
@@ -1374,6 +1480,61 @@ window.uploadJobPhoto = async function(jobId){
   }
 };
 
+
+async function geocodeAndPatchLead(id, address){
+  const geo = await geocodeAddress(address);
+  if (!geo) return { ok:false };
+  const { error } = await supabaseClient.from('leads').update({ lat: geo.lat, lng: geo.lng, updated_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+  return { ok:true };
+}
+
+async function geocodeAndPatchJob(id, address){
+  const geo = await geocodeAddress(address);
+  if (!geo) return { ok:false };
+  const { error } = await supabaseClient.from('jobs').update({ lat: geo.lat, lng: geo.lng, updated_at: new Date().toISOString() }).eq('id', id);
+  if (error) throw error;
+  return { ok:true };
+}
+
+window.geocodeMissingForDay = async function(max=15){
+  try{
+    const date = String(document.getElementById('dispatchDate')?.value || document.getElementById('mapDate')?.value || new Date().toISOString().split('T')[0]);
+    const dayJobs = (state.jobs||[]).filter(j => String(j.job_date) === date);
+    const missingJobs = dayJobs.filter(j => (!Number.isFinite(Number(j.lat)) || !Number.isFinite(Number(j.lng))) && (j.address || '').trim());
+    const missingLeads = (state.leads||[]).filter(l => (!Number.isFinite(Number(l.lat)) || !Number.isFinite(Number(l.lng))) && (l.address || '').trim());
+
+    const targets = [];
+    for (const j of missingJobs) targets.push({ type:'job', id:j.id, address:j.address });
+    for (const l of missingLeads) targets.push({ type:'lead', id:l.id, address:l.address });
+
+    if (!targets.length){
+      showAlert('No missing coordinates found.', 'success');
+      return;
+    }
+
+    let done = 0;
+    for (const t of targets.slice(0, Number(max)||15)){
+      if (t.type === 'job'){
+        const r = await geocodeAndPatchJob(t.id, t.address);
+        if (r.ok) done++;
+      } else {
+        const r = await geocodeAndPatchLead(t.id, t.address);
+        if (r.ok) done++;
+      }
+      // small delay to reduce rate-limit risk
+      await new Promise(res => setTimeout(res, 250));
+    }
+
+    await syncFromSupabase();
+    try{ renderDispatchPanel(); }catch(_){}
+    try{ renderMapPanel(); }catch(_){}
+    showAlert(`✅ Geocoded ${done} item(s).`, 'success');
+  } catch(e){
+    console.error(e);
+    showAlert(`Geocode failed: ${e?.message || 'error'}`, 'error');
+  }
+};
 // ==============================
 // Leads
 // ==============================
@@ -1381,14 +1542,31 @@ window.uploadJobPhoto = async function(jobId){
 async function geocodeAddress(address){
   const q = String(address||'').trim();
   if (!q) return null;
-  // Free geocoder (rate-limited). For production, replace with Google/Mapbox.
-  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
-  const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
-  const j = await r.json();
-  const first = Array.isArray(j) ? j[0] : null;
-  if (!first) return null;
-  return { lat: Number(first.lat), lng: Number(first.lon) };
+  try{
+    // Free geocoder (rate-limited). For production, replace with Google/Mapbox.
+    // Nominatim can be strict; include a basic Accept header and handle non-200/429 gracefully.
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+    const r = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+      // avoid cached failures
+      cache: 'no-store'
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const first = Array.isArray(j) ? j[0] : null;
+    if (!first) return null;
+    const lat = Number(first.lat), lng = Number(first.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng };
+  } catch(e){
+    return null;
+  }
 }
+
+async function __geocodeAddress(address){
+  return geocodeAddress(address);
+}
+
 
 async function renderLeadsPanel(){
   const panel = document.getElementById('leadsPanel');
@@ -1493,6 +1671,9 @@ window.createLead = async function(){
     if (!address) throw new Error('Address is required.');
 
     const geo = await geocodeAddress(address);
+    if (!geo){
+      showAlert('⚠️ Could not auto-locate that address. Lead saved, but it will not show on the map until it has coordinates. Use “Geocode missing” to retry.', 'error');
+    }
     const payload = { biz_name: biz || null, address, status, follow_up_date: follow || null, notes: notes || null, lat: geo?.lat ?? null, lng: geo?.lng ?? null, updated_at: new Date().toISOString() };
     const { error } = await supabaseClient.from('leads').insert(payload);
     if (error){
@@ -1649,6 +1830,7 @@ async function renderMapPanel(){
 
           <div class="control-group">
             <button class="btn-secondary btn-small" type="button" onclick="renderMapPanel()">Refresh</button>
+            <button class="btn-secondary btn-small" type="button" onclick="geocodeMissingForDay(15)">Geocode missing</button>
             <button class="btn-secondary btn-small" type="button" onclick="switchTab('dispatch')">Back</button>
           </div>
         </div>
@@ -1665,6 +1847,10 @@ async function renderMapPanel(){
   `;
 
   // Init map once
+  if (!window.L){
+    document.getElementById('leafletMap').innerHTML = `<div class="empty-state">Map library failed to load. Check network/CSP and refresh.</div>`;
+    return;
+  }
   // Ensure Leaflet marker icons load correctly on Vercel (no local image 404)
   try{
     if (window.L && L.Icon && L.Icon.Default){
@@ -1825,6 +2011,34 @@ async function renderMapPanel(){
       }
     }
   }
+
+  
+  if (!points.length){
+    const mapEl = document.getElementById('leafletMap');
+    if (mapEl){
+      mapEl.insertAdjacentHTML('beforeend', `
+        <div class="map-empty-overlay">
+          <div class="map-empty-card">
+            <div style="font-weight:900; font-size:14px;">No mappable stops yet</div>
+            <div style="opacity:.85; font-size:12px; margin-top:6px;">
+              Leads and jobs need coordinates (lat/lng) to appear on the map.
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+              <button class="btn-primary btn-small" type="button" onclick="geocodeMissingForDay(15)">Geocode missing</button>
+              <button class="btn-secondary btn-small" type="button" onclick="switchTab('leads')">Go to Leads</button>
+            </div>
+          </div>
+        </div>
+      `);
+    }
+  }
+// Fit view to points if we have any
+  try{
+    if (points.length){
+      __leaflet.map.fitBounds(points, { padding: [20,20] });
+    }
+    setTimeout(() => { try{ __leaflet.map.invalidateSize(); } catch(_){} }, 80);
+  }catch(e){}
 }
 window.renderMapPanel = renderMapPanel;
 
