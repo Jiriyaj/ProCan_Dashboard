@@ -1001,7 +1001,7 @@ async function deleteOperator(opId){
   await refreshAll(false);
 }
 
-/* ========= Map ========= */ ========= */
+/* ========= Map ========= */
 function ensureMap(){
   if (state.map) return state.map;
 
