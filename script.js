@@ -1559,7 +1559,7 @@ function clearMapLayers(){
   __leaflet.lines = [];
 }
 
-async async function renderMapPanel(){
+async function renderMapPanel(){
   const panel = document.getElementById('mapPanel');
   if (!panel) return;
 
