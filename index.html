@@ -3,194 +3,228 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ProCan J.A.I.D.A — Ops & Payout Tracker</title>
-  <link rel="stylesheet" href="./styles.css?v=20260127-3" />
-  <!-- Leaflet (map) -->
+  <title>ProCan J.A.I.D.A — Ops Console</title>
+  <link rel="stylesheet" href="./styles.css?v=20260129-1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="icon" href="data:,">
 </head>
 <body>
-  
 
-<script>
-  // Remove startup overlay ASAP (cannot be blocked by later JS errors)
-  window.addEventListener('DOMContentLoaded', function(){
-    var o = document.getElementById('startupOverlay');
-    if (o){
-      o.classList.add('hidden');
-      setTimeout(function(){ try{o.remove();}catch(e){} }, 300);
-    }
-  });
-</script>
-
-<!-- Startup Sequence -->
-  <div class="startup-overlay" id="startupOverlay" aria-hidden="true" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10000;">
+  <!-- Startup -->
+  <div class="startup-overlay" id="startupOverlay" aria-hidden="true">
     <div class="startup-logo">ProCan J.A.I.D.A</div>
-    <div class="startup-text">J.A.I.D.A, initializing ops console…</div>
+    <div class="startup-text">Initializing ops console…</div>
     <div class="startup-spinner" aria-hidden="true"></div>
   </div>
 
-  <div class="content-wrapper" id="contentWrapper">
-    <div class="page-wrap">
+  <!-- AUTH -->
+  <div class="auth-gate" id="authGate" style="display:none;">
+    <div class="auth-card">
+      <div class="auth-brand">ProCan J.A.I.D.A</div>
+      <div class="auth-sub">Secure login</div>
 
-      <!-- AUTH GATE -->
-      <div class="auth-gate" id="authGate" style="display:none;">
-        <div class="card auth-card">
-          <div class="card-header">
-            <h2>Secure Login</h2>
-            <span class="tier-badge tier-1">Supabase Auth</span>
-          </div>
+      <label class="field">
+        <span>Email</span>
+        <input id="authEmail" type="email" placeholder="you@procan.com" autocomplete="email" />
+      </label>
 
-          <div class="form-group">
-            <label for="authEmail">Email</label>
-            <input id="authEmail" type="email" placeholder="you@procan.com" autocomplete="email" />
-          </div>
+      <label class="field">
+        <span>Password</span>
+        <input id="authPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
+      </label>
 
-          <div class="form-group">
-            <label for="authPassword">Password</label>
-            <input id="authPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
-          </div>
-
-          <div class="form-row">
-            <button class="btn-primary" type="button" id="btnLogin">Login</button>
-            <button class="btn-secondary" type="button" id="btnSignup">Create Account</button>
-          </div>
-
-          <div style="margin-top:12px;font-size:12px;opacity:.8;line-height:1.4;">
-            Tip: create your first admin account, then keep this dashboard private.
-          </div>
-
-          <div id="authMsg" class="empty-state" style="margin-top:14px;display:none;"></div>
-        </div>
+      <div class="auth-actions">
+        <button class="btn primary" id="btnLogin">Login</button>
+        <button class="btn ghost" id="btnMagic">Send magic link</button>
       </div>
 
-      <!-- APP -->
-      <div id="appShell" style="display:none; width:100%;">
-        <div class="topbar">
-
-          <div class="topbar-left">
-            <div class="topbar-title">ProCan J.A.I.D.A</div>
-            <div class="topbar-sub">Ops • Operators • Payouts</div>
-          </div>
-          <div class="topbar-right">
-            <div class="pill" id="whoamiPill">Signed in</div>
-            <button class="btn-secondary btn-small" id="btnLogout" type="button">Logout</button>
-          </div>
-        </div>
-
-        <div id="dbNotice" class="db-notice" style="display:none;"></div>
-
-        <div class="container">
-          <!-- Single column -->
-          <div class="right full">
-            <div id="alertContainer"></div>
-
-            <div class="card">
-              <div class="card-header">
-                <h2>Dashboard</h2>
-                <div class="dashboard-header-right">
-                  <div style="font-size:12px; opacity:.75;">Biweekly operator pay periods end on Friday</div>
-                  <button id="wipeBtn" class="btn-secondary btn-small stealth-wipe" type="button" title="(Local only) Clear UI cache" onclick="clearLocalUiCache()">Wipe</button>
-                </div>
-              </div>
-
-              <div class="summary-grid">
-                <div class="summary-card">
-                  <div class="summary-label">Paid Orders</div>
-                  <div class="summary-value" id="kpiPaidOrders">0</div>
-                </div>
-                <div class="summary-card">
-                  <div class="summary-label">Unassigned Orders</div>
-                  <div class="summary-value" id="kpiUnassigned">0</div>
-                </div>
-                <div class="summary-card">
-                  <div class="summary-label">Scheduled (next 7 days)</div>
-                  <div class="summary-value" id="kpiScheduled">0</div>
-                </div>
-                <div class="summary-card">
-                  <div class="summary-label">Active Operators</div>
-                  <div class="summary-value" id="kpiOperators">0</div>
-                </div>
-              </div>
-
-              <div class="tabs" style="margin-top: 18px;">
-                <button class="tab active" onclick="switchTab('dispatch')">Dispatch</button>
-                <button class="tab" onclick="switchTab('map')">Map</button>
-                <button class="tab" onclick="switchTab('leads')">Leads</button>
-                <button class="tab" onclick="switchTab('orders')">Orders</button>
-                <button class="tab" onclick="switchTab('routes')">Routes</button>
-                <button class="tab" onclick="switchTab('operators')">Operators</button>
-                              </div>
-
-              <div class="tab-content active" id="dispatchTab">
-                <div id="dispatchPanel"></div>
-              </div>
-
-              <div class="tab-content" id="mapTab">
-                <div id="mapPanel"></div>
-              </div>
-
-              <div class="tab-content" id="leadsTab">
-                <div id="leadsPanel"></div>
-              </div>
-
-              <div class="tab-content" id="ordersTab">
-                <div id="ordersPanel"></div>
-              </div>
-              
-              <div class="tab-content" id="routesTab">
-                <div id="routesPanel"></div>
-              </div>
-
-              <div class="tab-content" id="operatorsTab">
-                <div class="card">
-              <div class="card-header">
-                <h2>Operators</h2>
-                <button class="btn-secondary" type="button" onclick="toggleRepForm()">Add / Edit</button>
-              </div>
-
-              <div id="repForm" style="display:none;">
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="repName">Operator Name</label>
-                    <input id="repName" type="text" placeholder="e.g., Chris" />
-                  </div>
-                  <div class="form-group">
-                    <label for="repChurn">Payout %</label>
-                    <input id="repChurn" type="number" min="0" max="100" step="0.1" placeholder="30" />
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label style="display:flex;gap:10px;align-items:center;">
-                    <input id="repIsManager" type="checkbox" style="width:auto;">
-                    <span>Lead / Supervisor</span>
-                  </label>
-                </div>
-                <div class="form-row">
-                  <button class="btn-primary" type="button" onclick="addRep()">Save Operator</button>
-                  <button class="btn-secondary" type="button" onclick="toggleRepForm()">Close</button>
-                </div>
-              </div>
-
-              <div id="repsList"></div>
-            </div>
-              </div>
-
-
-              </div>              
-
-
-            </div>
-          </div>
-        </div>
-      </div> <!-- /appShell -->
+      <div class="auth-msg" id="authMsg"></div>
+      <div class="auth-foot">Authorized staff only</div>
     </div>
   </div>
 
-  <!-- Supabase JS -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- APP SHELL -->
+  <div class="app" id="app" style="display:none;">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-title">ProCan J.A.I.D.A</div>
+        <div class="brand-sub">Dispatch • Routes • Payouts</div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="homeView">Home</button>
+        <button class="nav-item" data-view="scheduleView">Schedule</button>
+        <button class="nav-item" data-view="mapView">Map</button>
+        <button class="nav-item" data-view="ordersView">Orders</button>
+        <button class="nav-item" data-view="operatorsView">Operators</button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="pill" id="signedInPill">Signed in</div>
+        <button class="btn outline" id="btnLogout">Logout</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="page-title" id="pageTitle">Home</div>
+          <div class="page-sub" id="pageSub">At-a-glance ops overview</div>
+        </div>
+
+        <div class="topbar-actions">
+          <div class="datebox">
+            <label>Week</label>
+            <input type="date" id="weekPicker" />
+          </div>
+          <button class="btn ghost" id="btnRefresh">Refresh</button>
+          <button class="btn primary" id="btnAutoAssign">Auto-assign week</button>
+        </div>
+      </header>
+
+      <div class="banner warn" id="banner" style="display:none;"></div>
+
+      <!-- HOME -->
+      <section class="view" id="homeView">
+        <div class="grid kpis">
+          <div class="card kpi">
+            <div class="kpi-label">This week gross</div>
+            <div class="kpi-value" id="kpiGross">$0</div>
+            <div class="kpi-sub" id="kpiGrossSub">From scheduled work</div>
+          </div>
+          <div class="card kpi">
+            <div class="kpi-label">This week profit</div>
+            <div class="kpi-value" id="kpiProfit">$0</div>
+            <div class="kpi-sub">Gross − operator payouts</div>
+          </div>
+          <div class="card kpi">
+            <div class="kpi-label">Jobs this week</div>
+            <div class="kpi-value" id="kpiJobs">0</div>
+            <div class="kpi-sub">Scheduled assignments</div>
+          </div>
+          <div class="card kpi">
+            <div class="kpi-label">Operator payouts</div>
+            <div class="kpi-value" id="kpiPayouts">$0</div>
+            <div class="kpi-sub">Due end of pay period</div>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Today’s route</div>
+                <div class="card-sub">What needs serviced today</div>
+              </div>
+              <button class="btn ghost" id="btnGoSchedule">Open schedule</button>
+            </div>
+            <div class="list" id="todayList"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Payout breakdown</div>
+                <div class="card-sub">Projected payouts by operator (this week)</div>
+              </div>
+            </div>
+            <div class="list" id="payoutList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCHEDULE -->
+      <section class="view" id="scheduleView" style="display:none;">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Schedule</div>
+              <div class="card-sub">Auto-assigned routes. Drag to reassign (phase 2).</div>
+            </div>
+            <div class="filters">
+              <select id="filterOperator"></select>
+              <select id="filterDay"></select>
+            </div>
+          </div>
+          <div class="schedule" id="scheduleBoard"></div>
+        </div>
+      </section>
+
+      <!-- MAP -->
+      <section class="view" id="mapView" style="display:none;">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Route map</div>
+              <div class="card-sub">Color-coded by operator. Displays scheduled stops.</div>
+            </div>
+            <div class="filters">
+              <select id="mapOperator"></select>
+              <select id="mapDay"></select>
+              <button class="btn ghost" id="btnGeocodeMissing">Geocode missing</button>
+            </div>
+          </div>
+          <div class="map-wrap">
+            <div id="map"></div>
+            <div class="map-empty" id="mapEmpty" style="display:none;">
+              <div class="map-empty-title">No mappable stops yet</div>
+              <div class="map-empty-sub">Add assignments (Auto-assign week), then geocode addresses.</div>
+              <div class="map-empty-actions">
+                <button class="btn primary" id="btnAutoAssign2">Auto-assign week</button>
+                <button class="btn ghost" id="btnGeocode2">Geocode missing</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ORDERS -->
+      <section class="view" id="ordersView" style="display:none;">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Orders</div>
+              <div class="card-sub">Incoming orders from Intake form (auto scheduled).</div>
+            </div>
+            <div class="filters">
+              <select id="ordersStatus"></select>
+              <input id="ordersSearch" type="search" placeholder="Search business / address…" />
+            </div>
+          </div>
+          <div class="table" id="ordersTable"></div>
+        </div>
+      </section>
+
+      <!-- OPERATORS -->
+      <section class="view" id="operatorsView" style="display:none;">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Operators</div>
+              <div class="card-sub">Manage payouts & capacity.</div>
+            </div>
+            <button class="btn primary" id="btnAddOperator">Add operator</button>
+          </div>
+
+          <div class="grid two">
+            <div class="card inner">
+              <div class="card-title-sm">Operators</div>
+              <div class="list" id="operatorsList"></div>
+            </div>
+            <div class="card inner">
+              <div class="card-title-sm">Edit</div>
+              <div id="operatorEditor" class="muted">Select an operator…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./supabase-config.js"></script>
-  <script defer  defer src="./script.js?v=20260127-3"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <script src="./supabase-config.js?v=20260129-1"></script>
+  <script src="./script.js?v=20260129-1"></script>
 </body>
 </html>
