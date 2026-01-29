@@ -10,6 +10,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 let supabaseClient = null;
+// Cache the last known session so slow auth checks don't kick you out.
+window.__cachedSession = window.__cachedSession || null;
 /* ===== Supabase init handled in boot() via initSupabase() ===== */
 'use strict';
 
@@ -373,7 +375,7 @@ async function requireAuth() {
       bindLogout();
 
   // Add a timeout so auth calls can’t hang forever.
-  const timeoutMs = 15000;
+  const timeoutMs = 60000;
   const withTimeout = (p) => Promise.race([
       p,
       new Promise((resolve) => setTimeout(() => resolve({ __timed_out: true }), timeoutMs))
@@ -381,7 +383,13 @@ async function requireAuth() {
 try {
     const res = await withTimeout(supabaseClient.auth.getSession());
     if (res && res.__timed_out) {
-      // Don’t blank the UI on slow networks/devices — fall back to auth gate.
+      // Don't force-logout on slow networks. If we already have a cached session, keep the app open.
+      if (window.__cachedSession) {
+        hideAuthGate();
+        showAppShell();
+        showAlert('⚠️ Slow auth check — staying signed in.', 'info');
+        return true;
+      }
       hideAppShell();
       showAuthGate();
       setAuthMsg('Session check is taking longer than expected. Please try again.', 'info');
@@ -389,6 +397,7 @@ try {
     }
     const { data } = res || {};
     const session = data?.session;
+    try { window.__cachedSession = session || null; } catch (_) {}
 
     if (!session) {
       hideAppShell();
@@ -710,7 +719,7 @@ function switchTab(tab) {
     : tab === 'leads' ? 'leadsTab'
     : tab === 'orders' ? 'ordersTab'
     : tab === 'routes' ? 'routesTab'
-    : tab === 'onboarding' ? 'onboardingTab'
+    : tab === 'operators' ? 'operatorsTab'
     : 'dispatchTab';
 
   document.getElementById(contentId)?.classList.add('active');
@@ -721,7 +730,7 @@ function switchTab(tab) {
   if (tab === 'leads') renderLeadsPanel();
   if (tab === 'orders') renderOrdersPanel();
   if (tab === 'routes') renderRoutesPanel();
-  if (tab === 'onboarding') renderOnboardingPanel();
+  if (tab === 'operators') { try { renderRepsList(); } catch(e){} }
 }
 window.switchTab = switchTab;
 
@@ -2634,8 +2643,15 @@ async function boot() {
         // Live auth changes (login/logout)
         try {
           supabaseClient.auth.onAuthStateChange(async (_event, _session) => {
-            const ok = await requireAuth();
-            if (!ok) return;
+            // Avoid kicking you out due to slow getSession() calls.
+            try { window.__cachedSession = _session || null; } catch (_) {}
+            if (!_session) {
+              hideAppShell();
+              showAuthGate();
+              return;
+            }
+            hideAuthGate();
+            showAppShell();
             await syncFromSupabase();
             saveStateLocal(); // keep local backup copy
             renderEverything();

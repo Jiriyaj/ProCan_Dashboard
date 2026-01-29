@@ -78,69 +78,10 @@
         </div>
 
         <div class="container">
-          <!-- Left column -->
-          <div class="left">
+          <!-- Single column -->
+          <div class="right full">
             <div id="alertContainer"></div>
 
-            <div class="card">
-              <div class="card-header">
-                <h2>Orders Flow</h2>
-                <span class="tier-badge tier-2">Intake → Supabase → Dashboard</span>
-              </div>
-
-              <div style="opacity:.85; line-height:1.5;">
-                <div style="margin-bottom:10px;">
-                  This dashboard no longer accepts manual job submissions.
-                </div>
-                <ul style="margin:0; padding-left:18px;">
-                  <li><b>All orders come from the Intake site</b> (Card or Cash).</li>
-                  <li>Use <b>Orders</b> to monitor incoming customers.</li>
-                  <li>Use <b>Routes</b> to view daily assignments.</li>
-                  <li>Use <b>Onboarding</b> to check availability + assign deposits.</li>
-                </ul>
-                <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
-                  <button class="btn-primary" type="button" onclick="switchTab('orders')">Open Orders</button>
-                  <button class="btn-secondary" type="button" onclick="switchTab('routes')">Open Routes</button>
-                  <button class="btn-secondary" type="button" onclick="switchTab('onboarding')">Open Onboarding</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card-header">
-                <h2>Operators</h2>
-                <button class="btn-secondary" type="button" onclick="toggleRepForm()">Add / Edit</button>
-              </div>
-
-              <div id="repForm" style="display:none;">
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="repName">Operator Name</label>
-                    <input id="repName" type="text" placeholder="e.g., Chris" />
-                  </div>
-                  <div class="form-group">
-                    <label for="repChurn">Payout %</label>
-                    <input id="repChurn" type="number" min="0" max="100" step="0.1" placeholder="30" />
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label style="display:flex;gap:10px;align-items:center;">
-                    <input id="repIsManager" type="checkbox" style="width:auto;">
-                    <span>Lead / Supervisor</span>
-                  </label>
-                </div>
-                <div class="form-row">
-                  <button class="btn-primary" type="button" onclick="addRep()">Save Operator</button>
-                  <button class="btn-secondary" type="button" onclick="toggleRepForm()">Close</button>
-                </div>
-              </div>
-
-              <div id="repsList"></div>
-            </div>
-          </div>
-
-          <!-- Right column -->
-          <div class="right">
             <div class="card">
               <div class="card-header">
                 <h2>Dashboard</h2>
@@ -175,8 +116,8 @@
                 <button class="tab" onclick="switchTab('leads')">Leads</button>
                 <button class="tab" onclick="switchTab('orders')">Orders</button>
                 <button class="tab" onclick="switchTab('routes')">Routes</button>
-                <button class="tab" onclick="switchTab('onboarding')">Onboarding</button>
-              </div>
+                <button class="tab" onclick="switchTab('operators')">Operators</button>
+                              </div>
 
               <div class="tab-content active" id="dispatchTab">
                 <div id="dispatchPanel"></div>
@@ -198,8 +139,41 @@
                 <div id="routesPanel"></div>
               </div>
 
-              <div class="tab-content" id="onboardingTab">
-                <div id="onboardingPanel"></div>
+              <div class="tab-content" id="operatorsTab">
+                <div class="card">
+              <div class="card-header">
+                <h2>Operators</h2>
+                <button class="btn-secondary" type="button" onclick="toggleRepForm()">Add / Edit</button>
+              </div>
+
+              <div id="repForm" style="display:none;">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="repName">Operator Name</label>
+                    <input id="repName" type="text" placeholder="e.g., Chris" />
+                  </div>
+                  <div class="form-group">
+                    <label for="repChurn">Payout %</label>
+                    <input id="repChurn" type="number" min="0" max="100" step="0.1" placeholder="30" />
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label style="display:flex;gap:10px;align-items:center;">
+                    <input id="repIsManager" type="checkbox" style="width:auto;">
+                    <span>Lead / Supervisor</span>
+                  </label>
+                </div>
+                <div class="form-row">
+                  <button class="btn-primary" type="button" onclick="addRep()">Save Operator</button>
+                  <button class="btn-secondary" type="button" onclick="toggleRepForm()">Close</button>
+                </div>
+              </div>
+
+              <div id="repsList"></div>
+            </div>
+              </div>
+
+
               </div>              
 
 
