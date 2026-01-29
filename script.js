@@ -114,6 +114,7 @@ let state = {
   leads: [],
   jobs: [],
   jobPhotos: [],
+  missingTables: [],
   settings: { cycle_anchor: '2026-04-01', lock_window_days: 7 },
   config: DEFAULT_CONFIG
 };
@@ -190,6 +191,34 @@ function showAlert(message, type = 'success') {
     alert.style.transition = 'opacity 0.3s';
     setTimeout(() => alert.remove(), 300);
   }, 3500);
+}
+
+function renderDbNotice(){
+  const el = document.getElementById('dbNotice');
+  if (!el) return;
+  const missing = state.missingTables || [];
+  if (!missing.length){
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="db-notice-inner">
+      <div class="db-notice-title">Database not initialized</div>
+      <div class="db-notice-text">
+        Missing tables in Supabase: <b>${missing.join(', ')}</b>.<br/>
+        Run <b>supabase-schema.sql</b> in Supabase → SQL Editor, then refresh.
+      </div>
+      <button class="btn-secondary btn-small" id="btnDbHowTo" type="button">Show steps</button>
+    </div>
+  `;
+  const btn = document.getElementById('btnDbHowTo');
+  if (btn){
+    btn.onclick = () => {
+      showAlert('Supabase → SQL Editor → paste/run supabase-schema.sql from this repo. Then refresh.', 'info');
+    };
+  }
 }
 
 function escapeHtml(text) {
@@ -415,6 +444,9 @@ try {
     setAuthMsg(e?.message || 'Auth error', 'error');
     return false;
   }
+
+  state.missingTables = Array.from(__missing);
+  renderDbNotice();
 }
 
 
@@ -470,6 +502,8 @@ function isMissingTableError(err, tableName){
 // ==============================
 async function syncFromSupabase() {
   if (!supabaseClient) return;
+  const __missing = new Set();
+  const markMissing = (t) => { if (t) __missing.add(t); };
 
   // Operators
   {
@@ -532,6 +566,7 @@ async function syncFromSupabase() {
     if (error) {
       if (isMissingTableError(error, 'route_stops')) {
         state.routeStops = [];
+        markMissing('route_stops');
       } else {
         throw error;
       }
@@ -546,6 +581,8 @@ async function syncFromSupabase() {
     if (error) {
       if (isMissingTableError(error, 'leads')) {
         state.leads = [];
+        markMissing('leads');
+        markMissing('leads');
       } else {
         throw error;
       }
@@ -560,6 +597,8 @@ async function syncFromSupabase() {
     if (error) {
       if (isMissingTableError(error, 'jobs')) {
         state.jobs = [];
+        markMissing('jobs');
+        markMissing('jobs');
       } else {
         throw error;
       }
@@ -574,6 +613,8 @@ async function syncFromSupabase() {
     if (error) {
       if (isMissingTableError(error, 'job_photos')) {
         state.jobPhotos = [];
+        markMissing('job_photos');
+        markMissing('job_photos');
       } else {
         throw error;
       }
@@ -1454,7 +1495,15 @@ window.createLead = async function(){
     const geo = await geocodeAddress(address);
     const payload = { biz_name: biz || null, address, status, follow_up_date: follow || null, notes: notes || null, lat: geo?.lat ?? null, lng: geo?.lng ?? null, updated_at: new Date().toISOString() };
     const { error } = await supabaseClient.from('leads').insert(payload);
-    if (error) throw error;
+    if (error){
+      if (isMissingTableError(error, 'leads')){
+        state.missingTables = Array.from(new Set([...(state.missingTables||[]), 'leads']));
+        renderDbNotice();
+        showAlert('Leads table missing in Supabase. Run supabase-schema.sql then refresh.', 'error');
+        return;
+      }
+      throw error;
+    }
     await syncFromSupabase();
     renderLeadsPanel();
     renderMapPanel();
@@ -1616,6 +1665,16 @@ async function renderMapPanel(){
   `;
 
   // Init map once
+  // Ensure Leaflet marker icons load correctly on Vercel (no local image 404)
+  try{
+    if (window.L && L.Icon && L.Icon.Default){
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+        iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+        shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
+      });
+    }
+  }catch(e){}
   if (!__leaflet.map){
     __leaflet.map = L.map('leafletMap', { zoomControl: true });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
