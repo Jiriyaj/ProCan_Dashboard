@@ -80,7 +80,7 @@ const state = {
 };
 
 const COLORS = [
-  '#9EF01A', '#28c7ff', '#ffb020', '#ff4d4d', '#40ff99', '#b084ff', '#ffd1dc'
+  '#28c7ff', '#ffb020', '#b084ff', '#ff4d4d', '#40ff99', '#9099a8', '#ffffff'
 ];
 
 /* ========= Boot ========= */
@@ -150,11 +150,16 @@ function wireUI(){
 
   // schedule filters
   $('filterOperator').addEventListener('change', () => renderSchedule());
-  $('filterDay').addEventListener('change', () => renderSchedule());
+  $('filterRange').addEventListener('change', () => renderSchedule());
   $('mapOperator').addEventListener('change', () => renderMap());
-  $('mapDay').addEventListener('change', () => renderMap());
+  $('mapRange').addEventListener('change', () => renderMap());
   $('ordersStatus').addEventListener('change', () => renderOrders());
   $('ordersSearch').addEventListener('input', () => renderOrders());
+  $('btnPrintSchedule')?.addEventListener('click', () => printSchedulePDF());
+  $('btnGoOrders')?.addEventListener('click', () => switchView('ordersView'));
+  $('btnBulkAutoAssign')?.addEventListener('click', async () => { await autoAssignCurrentWeek(); await refreshAll(false); });
+  $('btnAddOperator')?.addEventListener('click', async () => { await addOperator(); });
+
 }
 
 /* ========= Auth ========= */
@@ -213,6 +218,7 @@ function switchView(viewId){
   if (viewId === 'mapView'){
     setTimeout(() => {
       ensureMap();
+      try { state.map && state.map.invalidateSize(); } catch(e){}
       renderMap();
     }, 50);
   }
@@ -238,7 +244,11 @@ async function refreshAll(showBannerOnErrors){
   const [opsRes, ordRes, asnRes] = await Promise.all([
     supabaseClient.from('operators').select('*').order('created_at', {ascending:true}),
     supabaseClient.from('orders').select('*').order('created_at', {ascending:false}).limit(1000),
-    supabaseClient.from('assignments').select('*').gte('service_date', toISODate(state.weekStart)).lte('service_date', toISODate(addDays(state.weekStart,6))).order('service_date',{ascending:true}).order('sequence',{ascending:true}),
+    supabaseClient.from('assignments').select('*')
+      .gte('service_date', toISODate(addDays(state.weekStart,-30)))
+      .lte('service_date', toISODate(addDays(state.weekStart,60)))
+      .order('service_date',{ascending:true})
+      .order('stop_order',{ascending:true}),
   ]);
 
   if (opsRes.error) return showBanner(opsRes.error.message);
@@ -269,6 +279,7 @@ function buildOperatorColors(){
 
 function hydrateFilters(){
   const opSel = (el, includeAll=true) => {
+    if (!el) return;
     el.innerHTML = '';
     if (includeAll) el.append(new Option('All operators', 'all'));
     state.operators.forEach(o => el.append(new Option(o.name, o.id)));
@@ -278,23 +289,28 @@ function hydrateFilters(){
   opSel($('filterOperator'), true);
   opSel($('mapOperator'), true);
 
-  const daySel = (el, includeAll=true) => {
-    el.innerHTML='';
-    if (includeAll) el.append(new Option('All days', 'all'));
-    for (let i=0;i<7;i++){
-      const d = addDays(state.weekStart, i);
-      el.append(new Option(`${dayName(d.getDay())} ${toISODate(d)}`, toISODate(d)));
-    }
+  const rangeSel = (el) => {
+    if (!el) return;
+    const current = el.value || 'week';
+    el.innerHTML = '';
+    el.append(new Option('Today', 'today'));
+    el.append(new Option('This week', 'week'));
+    el.append(new Option('This month', 'month'));
+    // keep selection if possible
+    if (['today','week','month'].includes(current)) el.value = current;
+    else el.value = 'week';
   };
-  daySel($('filterDay'), true);
-  daySel($('mapDay'), true);
+  rangeSel($('filterRange'));
+  rangeSel($('mapRange'));
 
   const status = $('ordersStatus');
-  status.innerHTML='';
-  ['All','new','scheduled','completed','cancelled'].forEach(s=>{
-    const val = s==='All' ? 'all' : s;
-    status.append(new Option(s==='All'?'All statuses':s, val));
-  });
+  if (status){
+    status.innerHTML='';
+    ['All','new','paid','scheduled','completed','cancelled'].forEach(s=>{
+      const val = s==='All' ? 'all' : s;
+      status.append(new Option(s==='All'?'All statuses':s, val));
+    });
+  }
 }
 
 /* ========= Auto-assign =========
@@ -411,59 +427,123 @@ async function autoAssignCurrentWeek(){
 function renderHome(){
   const weekStartISO = toISODate(state.weekStart);
   const weekEndISO = toISODate(addDays(state.weekStart,6));
-
-  // Join assignments -> orders
   const orderById = new Map(state.orders.map(o => [o.id, o]));
   const opsById = new Map(state.operators.map(o => [o.id, o]));
 
   const weekAsn = state.assignments.filter(a => a.service_date >= weekStartISO && a.service_date <= weekEndISO);
-  const jobsCount = weekAsn.length;
 
-  let gross = 0;
+  // KPI calculations
+  let weekGross = 0;
   const payoutsByOp = {};
+  const weekOrderSet = new Set();
+
   for (const a of weekAsn){
-    const o = orderById.get(a.order_id);
-    if (!o) continue;
-    const amt = Number(o.monthly_total || o.due_today || 0);
-    gross += amt;
+    weekOrderSet.add(a.order_id);
+    const ord = orderById.get(a.order_id);
+    if (!ord) continue;
+    const amt = Number(ord.monthly_total || ord.due_today || 0);
+    weekGross += amt;
 
     const op = opsById.get(a.operator_id);
     const rate = Number(op?.payout_rate ?? 30) / 100;
     const pay = amt * rate;
-    payoutsByOp[a.operator_id] = (payoutsByOp[a.operator_id]||0) + pay;
+    if (a.operator_id) payoutsByOp[a.operator_id] = (payoutsByOp[a.operator_id]||0) + pay;
   }
-  const payouts = Object.values(payoutsByOp).reduce((s,v)=>s+v,0);
-  const profit = gross - payouts;
+  const weekPayouts = Object.values(payoutsByOp).reduce((s,v)=>s+v,0);
+  const weekProfit = weekGross - weekPayouts;
 
-  $('kpiGross').textContent = fmtMoney(gross);
-  $('kpiProfit').textContent = fmtMoney(profit);
-  $('kpiJobs').textContent = String(jobsCount);
-  $('kpiPayouts').textContent = fmtMoney(payouts);
+  // Totals (company-wide, based on loaded orders)
+  let totalGross = 0;
+  let totalProfit = 0;
+  for (const ord of state.orders){
+    const amt = Number(ord.monthly_total || ord.due_today || 0);
+    totalGross += amt;
+    // estimate profit using assigned operator rate if assigned this week, else 30%
+    const anyAsn = state.assignments.find(a => a.order_id === ord.id);
+    const op = anyAsn ? opsById.get(anyAsn.operator_id) : null;
+    const rate = Number(op?.payout_rate ?? 30) / 100;
+    totalProfit += amt - (amt * rate);
+  }
 
-  // Today list
-  const todayISO = toISODate(new Date());
-  const todayAsn = state.assignments.filter(a => a.service_date === todayISO).slice(0, 12);
-  const todayList = $('todayList');
-  todayList.innerHTML = '';
-  if (!todayAsn.length){
-    todayList.innerHTML = `<div class="muted">No jobs scheduled for today.</div>`;
+  // KPI: Gross card shows week gross; hover shows week profit
+  $('kpiGross').textContent = fmtMoney(weekGross);
+  $('kpiGrossSub').textContent = 'Hover to see profit';
+  attachKpiHover($('kpiGross')?.closest('.kpi'), `This week profit: ${fmtMoney(weekProfit)}`);
+
+  // KPI: Profit card shows total gross; hover shows total profit
+  $('kpiProfit').textContent = fmtMoney(totalGross);
+  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Total profit: ${fmtMoney(totalProfit)}`);
+
+  // KPI: Jobs card shows total clients (unique orders); hover shows total jobs this week
+  $('kpiJobs').textContent = String(weekOrderSet.size);
+  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Total jobs this week: ${weekAsn.length}`);
+
+  // Payouts KPI remains weekly payouts
+  $('kpiPayouts').textContent = fmtMoney(weekPayouts);
+
+  // Week routes list (grouped)
+  const weekRoutesList = $('weekRoutesList');
+  weekRoutesList.innerHTML = '';
+  if (!weekAsn.length){
+    weekRoutesList.innerHTML = `<div class="muted">No jobs scheduled for this week yet. Click “Auto-assign week”.</div>`;
   } else {
-    for (const a of todayAsn){
-      const o = orderById.get(a.order_id);
+    const sorted = [...weekAsn].sort((a,b)=>{
+      if (a.service_date !== b.service_date) return a.service_date.localeCompare(b.service_date);
+      const ao = Number(a.stop_order||0), bo = Number(b.stop_order||0);
+      return ao - bo;
+    });
+
+    for (const a of sorted){
+      const ord = orderById.get(a.order_id);
       const op = opsById.get(a.operator_id);
-      todayList.append(renderRow({
-        title: o?.biz_name || o?.contact_name || 'Job',
-        sub: o?.address || '',
+      const title = ord?.biz_name || ord?.business_name || ord?.contact_name || 'Order';
+      const sub = `${a.service_date} • ${op?.name || 'Unassigned'} • ${ord?.address || ''}`;
+      weekRoutesList.append(renderRow({
+        title,
+        sub,
         badges: [
-          { text: op?.name || 'Unassigned', cls:'blue' },
-          { text: fmtMoney(o?.monthly_total || o?.due_today || 0), cls:'brand' },
-          { text: (o?.cadence || 'monthly'), cls:'' },
+          { text: (ord?.cadence || 'monthly'), cls:'' },
+          { text: fmtMoney(ord?.monthly_total || ord?.due_today || 0), cls:'brand' },
         ]
       }));
     }
   }
 
-  // Payout list
+  // Unassigned orders (paid/new, not scheduled this week)
+  const assignedThisWeek = new Set(weekAsn.map(a => a.order_id));
+  const unassigned = state.orders
+    .filter(o => (o.status || 'new') !== 'cancelled')
+    .filter(o => !assignedThisWeek.has(o.id))
+    .slice(0, 20);
+
+  const unassignedList = $('unassignedList');
+  if (unassignedList){
+    unassignedList.innerHTML = '';
+    if (!unassigned.length){
+      unassignedList.innerHTML = `<div class="muted">No unassigned orders for this week.</div>`;
+    } else {
+      for (const ord of unassigned){
+        unassignedList.append(renderRow({
+          title: ord.biz_name || ord.business_name || ord.contact_name || 'Order',
+          sub: ord.address || '',
+          badges: [{ text: (ord.status || 'new'), cls:'' }, { text: fmtMoney(ord.monthly_total || ord.due_today || 0), cls:'brand' }]
+        }));
+      }
+    }
+  }
+
+  // Workload visual
+  const fill = $('workloadFill');
+  const sub = $('workloadSub');
+  if (fill && sub){
+    const total = state.orders.length || 0;
+    const assigned = weekAsn.length;
+    const pct = total ? Math.min(100, Math.round((assigned / total) * 100)) : 0;
+    fill.style.width = pct + '%';
+    sub.textContent = `${assigned} scheduled this week • ${unassigned.length} unassigned shown`;
+  }
+
+  // Payout breakdown list
   const payoutList = $('payoutList');
   payoutList.innerHTML = '';
   const entries = state.operators
@@ -484,6 +564,19 @@ function renderHome(){
   }
 }
 
+function attachKpiHover(cardEl, text){
+  if (!cardEl) return;
+  cardEl.setAttribute('data-hover','1');
+  let hover = cardEl.querySelector('.kpi-hover');
+  if (!hover){
+    hover = document.createElement('div');
+    hover.className = 'kpi-hover';
+    cardEl.appendChild(hover);
+  }
+  hover.textContent = text;
+}
+
+
 function renderRow({title, sub, badges=[]}){
   const d = document.createElement('div');
   d.className = 'row';
@@ -503,6 +596,22 @@ function renderRow({title, sub, badges=[]}){
 }
 
 /* ========= Schedule ========= */
+function getRangeWindow(range){
+  const now = new Date();
+  const todayISO = toISODate(now);
+  if (range === 'today'){
+    return { startISO: todayISO, endISO: todayISO, label: 'Today' };
+  }
+  if (range === 'month'){
+    const d = new Date(state.weekStart);
+    const first = new Date(d.getFullYear(), d.getMonth(), 1);
+    const last = new Date(d.getFullYear(), d.getMonth()+1, 0);
+    return { startISO: toISODate(first), endISO: toISODate(last), label: 'This month' };
+  }
+  // default week (based on week picker)
+  return { startISO: toISODate(state.weekStart), endISO: toISODate(addDays(state.weekStart,6)), label: 'This week' };
+}
+
 function renderSchedule(){
   const board = $('scheduleBoard');
   if (!board) return;
@@ -510,69 +619,191 @@ function renderSchedule(){
   const orderById = new Map(state.orders.map(o => [o.id, o]));
   const opsById = new Map(state.operators.map(o => [o.id, o]));
 
-  const opFilter = $('filterOperator').value || 'all';
-  const dayFilter = $('filterDay').value || 'all';
+  const opFilter = $('filterOperator')?.value || 'all';
+  const range = $('filterRange')?.value || 'week';
+  const { startISO, endISO } = getRangeWindow(range);
 
+  const rows = state.assignments
+    .filter(a => a.service_date >= startISO && a.service_date <= endISO)
+    .filter(a => opFilter === 'all' ? true : (a.operator_id === opFilter))
+    .sort((a,b)=>{
+      if (a.service_date !== b.service_date) return a.service_date.localeCompare(b.service_date);
+      if ((a.operator_id||'') !== (b.operator_id||'')) return (a.operator_id||'').localeCompare(b.operator_id||'');
+      return Number(a.stop_order||0) - Number(b.stop_order||0);
+    });
+
+  // Build table
   board.innerHTML = '';
+  const table = document.createElement('div');
+  table.className = 'schedule-table';
 
-  for (let i=0;i<7;i++){
-    const date = addDays(state.weekStart, i);
-    const iso = toISODate(date);
+  const header = document.createElement('div');
+  header.className = 'schedule-row header';
+  header.innerHTML = `
+    <div>Date</div>
+    <div>Operator</div>
+    <div data-col="biz">Business</div>
+    <div data-col="addr">Address</div>
+    <div>Status</div>
+    <div style="text-align:right;">Actions</div>
+  `;
+  table.appendChild(header);
 
-    if (dayFilter !== 'all' && dayFilter !== iso) continue;
+  if (!rows.length){
+    const empty = document.createElement('div');
+    empty.className = 'schedule-row';
+    empty.innerHTML = `<div class="muted" style="grid-column:1/-1;">No scheduled jobs in this range. Click “Auto-assign week”.</div>`;
+    table.appendChild(empty);
+  } else {
+    for (const a of rows){
+      const ord = orderById.get(a.order_id) || {};
+      const op = opsById.get(a.operator_id) || {};
+      const status = ord.status || 'scheduled';
 
-    const col = document.createElement('div');
-    col.className = 'daycol';
-    col.innerHTML = `<div class="dayhead"><div class="dayname">${dayName(date.getDay())}</div><div class="daydate">${iso}</div></div>`;
+      const row = document.createElement('div');
+      row.className = 'schedule-row';
+      row.dataset.assignmentId = a.id;
 
-    const asn = state.assignments
-      .filter(a => a.service_date === iso)
-      .filter(a => opFilter === 'all' ? true : a.operator_id === opFilter)
-      .sort((a,b)=>(a.sequence||0)-(b.sequence||0));
-
-    if (!asn.length){
-      const empty = document.createElement('div');
-      empty.className='muted';
-      empty.style.padding='8px';
-      empty.textContent='No stops';
-      col.appendChild(empty);
-    } else {
-      for (const a of asn){
-        const o = orderById.get(a.order_id);
-        const op = opsById.get(a.operator_id);
-        const stop = document.createElement('div');
-        stop.className = 'stop';
-        stop.innerHTML = `
-          <div class="t">${escapeHtml(o?.biz_name || 'Job')}</div>
-          <div class="s">${escapeHtml(o?.address || '')}</div>
-          <div class="meta">
-            <span class="badge blue">${escapeHtml(op?.name || 'Unassigned')}</span>
-            <span class="badge brand">${fmtMoney(o?.monthly_total || o?.due_today || 0)}</span>
-            <span class="badge">${escapeHtml(String(o?.cadence || 'monthly'))}</span>
-          </div>
-        `;
-        col.appendChild(stop);
-      }
+      row.innerHTML = `
+        <div>${escapeHtml(a.service_date)}</div>
+        <div>${escapeHtml(op.name || 'Unassigned')}</div>
+        <div data-col="biz"><div class="title">${escapeHtml(ord.biz_name || ord.business_name || ord.contact_name || 'Order')}</div>
+          <div class="sub">${escapeHtml(ord.cadence || '')} • ${fmtMoney(ord.monthly_total || ord.due_today || 0)}</div></div>
+        <div data-col="addr" class="sub">${escapeHtml(ord.address || '')}</div>
+        <div><span class="badge"><span class="dot"></span>${escapeHtml(status)}</span></div>
+        <div class="actions">
+          <button class="btn btn-mini ghost" data-action="edit">Edit</button>
+          <button class="btn btn-mini ghost" data-action="reassign">Reassign</button>
+          <button class="btn btn-mini outline" data-action="delete">Delete</button>
+        </div>
+      `;
+      table.appendChild(row);
     }
-
-    board.appendChild(col);
   }
+
+  board.appendChild(table);
+
+  // Row actions
+  table.querySelectorAll('button[data-action]').forEach(btn=>{
+    btn.addEventListener('click', async (e)=>{
+      const action = btn.dataset.action;
+      const row = btn.closest('.schedule-row');
+      const id = row?.dataset.assignmentId;
+      if (!id) return;
+      if (action === 'delete') return deleteAssignment(id);
+      if (action === 'edit') return editAssignment(id);
+      if (action === 'reassign') return reassignAssignment(id);
+    });
+  });
 }
+
+async function deleteAssignment(id){
+  if (!confirm('Delete this scheduled job?')) return;
+  const { error } = await supabaseClient.from('assignments').delete().eq('id', id);
+  if (error) return showBanner(error.message);
+  await refreshAll(false);
+}
+
+async function editAssignment(id){
+  const a = state.assignments.find(x => x.id === id);
+  if (!a) return;
+  const newDate = prompt('Service date (YYYY-MM-DD):', a.service_date);
+  if (!newDate) return;
+  const { error } = await supabaseClient.from('assignments').update({ service_date: newDate }).eq('id', id);
+  if (error) return showBanner(error.message);
+  await refreshAll(false);
+}
+
+async function reassignAssignment(id){
+  const a = state.assignments.find(x => x.id === id);
+  if (!a) return;
+  const options = ['unassigned', ...state.operators.map(o=>o.id)].join(',');
+  const newOp = prompt(`Operator id (or "unassigned"):
+${options}`, a.operator_id || 'unassigned');
+  if (!newOp) return;
+  const opId = newOp === 'unassigned' ? null : newOp;
+  const { error } = await supabaseClient.from('assignments').update({ operator_id: opId }).eq('id', id);
+  if (error) return showBanner(error.message);
+  await refreshAll(false);
+}
+
+
+function printSchedulePDF(){
+  const opFilter = $('filterOperator')?.value || 'all';
+  const range = 'week'; // PDF is weekly dispatch sheet
+  const { startISO, endISO } = getRangeWindow(range);
+  const orderById = new Map(state.orders.map(o => [o.id, o]));
+  const opsById = new Map(state.operators.map(o => [o.id, o]));
+
+  if (opFilter === 'all'){
+    alert('Select an operator first (top of Schedule) before printing.');
+    return;
+  }
+
+  const rows = state.assignments
+    .filter(a => a.service_date >= startISO && a.service_date <= endISO)
+    .filter(a => a.operator_id === opFilter)
+    .sort((a,b)=> a.service_date.localeCompare(b.service_date) || (Number(a.stop_order||0)-Number(b.stop_order||0)));
+
+  const op = opsById.get(opFilter);
+  const title = `ProCan Weekly Route Sheet — ${op?.name || 'Operator'} — Week of ${startISO}`;
+
+  const w = window.open('', '_blank');
+  if (!w) return alert('Pop-up blocked. Allow pop-ups to print.');
+
+  const style = `
+    <style>
+      body{font-family:Arial, sans-serif; padding:18px;}
+      h1{font-size:18px; margin:0 0 10px;}
+      .sub{color:#555; margin:0 0 14px;}
+      table{width:100%; border-collapse:collapse; font-size:12px;}
+      th,td{border:1px solid #ddd; padding:8px; vertical-align:top;}
+      th{background:#f4f4f4; text-align:left;}
+      .day{background:#fafafa; font-weight:700;}
+    </style>
+  `;
+
+  let html = `${style}<h1>${title}</h1><div class="sub">Stops are ordered top-to-bottom for each day.</div>`;
+  html += `<table><thead><tr><th>Date</th><th>Stop</th><th>Business</th><th>Address</th><th>Notes</th></tr></thead><tbody>`;
+
+  if (!rows.length){
+    html += `<tr><td colspan="5">No jobs scheduled for this operator this week.</td></tr>`;
+  } else {
+    for (const a of rows){
+      const ord = orderById.get(a.order_id) || {};
+      html += `<tr>
+        <td>${a.service_date}</td>
+        <td>${Number(a.stop_order||0)+1}</td>
+        <td>${escapeHtml(ord.biz_name || ord.business_name || ord.contact_name || 'Order')}</td>
+        <td>${escapeHtml(ord.address || '')}</td>
+        <td>${escapeHtml(ord.notes || '')}</td>
+      </tr>`;
+    }
+  }
+
+  html += `</tbody></table>`;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  w.print();
+}
+
 
 /* ========= Orders ========= */
 function renderOrders(){
   const wrap = $('ordersTable');
   if (!wrap) return;
 
-  const status = $('ordersStatus').value || 'all';
-  const q = String($('ordersSearch').value || '').toLowerCase();
+  const status = $('ordersStatus')?.value || 'all';
+  const q = String($('ordersSearch')?.value || '').toLowerCase();
 
   let rows = state.orders.slice();
   if (status !== 'all') rows = rows.filter(o => String(o.status||'new') === status);
   if (q) rows = rows.filter(o =>
-    String(o.biz_name||'').toLowerCase().includes(q) ||
+    String(o.biz_name||o.business_name||'').toLowerCase().includes(q) ||
     String(o.address||'').toLowerCase().includes(q) ||
-    String(o.order_id||'').toLowerCase().includes(q)
+    String(o.order_id||o.id||'').toLowerCase().includes(q)
   );
 
   const html = [];
@@ -583,39 +814,194 @@ function renderOrders(){
     <th>Preferred day</th>
     <th>Monthly</th>
     <th>Status</th>
-    <th>Created</th>
+    <th>Actions</th>
   </tr></thead><tbody>`);
 
   for (const o of rows.slice(0, 400)){
-    html.push(`<tr>
-      <td>${escapeHtml(o.biz_name||'')}</td>
+    html.push(`<tr data-order-id="${escapeHtml(o.id)}">
+      <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(o.cadence||'')}</td>
       <td>${escapeHtml(o.preferred_service_day||'')}</td>
       <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
       <td>${escapeHtml(o.status||'new')}</td>
-      <td>${escapeHtml(String(o.created_at||'').slice(0,10))}</td>
+      <td>
+        <button class="btn btn-mini ghost" data-act="schedule">Schedule</button>
+        <button class="btn btn-mini ghost" data-act="status">Status</button>
+        <button class="btn btn-mini outline" data-act="delete">Delete</button>
+      </td>
     </tr>`);
   }
   html.push(`</tbody></table>`);
   wrap.innerHTML = html.join('');
-}
 
-/* ========= Operators ========= */
-function renderOperators(){
-  const list = $('operatorsList');
-  if (!list) return;
-  list.innerHTML = '';
-  state.operators.forEach(o => {
-    list.append(renderRow({
-      title: o.name,
-      sub: `Payout: ${Number(o.payout_rate||30).toFixed(1)}% • ${o.active===false?'Inactive':'Active'}`,
-      badges: [{ text: o.is_manager ? 'Manager' : 'Operator', cls:'' }]
-    }));
+  wrap.querySelectorAll('button[data-act]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const tr = btn.closest('tr');
+      const orderId = tr?.dataset.orderId;
+      if (!orderId) return;
+      const act = btn.dataset.act;
+      if (act === 'schedule') return scheduleOrder(orderId);
+      if (act === 'status') return updateOrderStatus(orderId);
+      if (act === 'delete') return deleteOrder(orderId);
+    });
   });
 }
 
-/* ========= Map ========= */
+async function scheduleOrder(orderId){
+  const ord = state.orders.find(o => o.id === orderId);
+  if (!ord) return;
+  const date = prompt('Service date (YYYY-MM-DD):', toISODate(state.weekStart));
+  if (!date) return;
+
+  if (!state.operators.length){
+    alert('Add an operator first (Operators tab).');
+    return;
+  }
+
+  const opNameList = state.operators.map(o=>`${o.name} (${o.id})`).join('\n');
+  const opIdRaw = prompt(`Operator id (paste one):\n${opNameList}`, state.operators[0].id);
+  if (!opIdRaw) return;
+
+  const payload = { order_id: orderId, operator_id: opIdRaw, service_date: date, stop_order: 0 };
+  const { error } = await supabaseClient.from('assignments').upsert(payload, { onConflict: 'order_id,service_date' });
+  if (error) return showBanner(error.message);
+
+  await refreshAll(false);
+  switchView('scheduleView');
+}
+
+async function updateOrderStatus(orderId){
+  const ord = state.orders.find(o => o.id === orderId);
+  if (!ord) return;
+  const current = String(ord.status||'new');
+  const next = prompt('Set status (new, paid, scheduled, completed, cancelled):', current);
+  if (!next) return;
+
+  const { error } = await supabaseClient.from('orders').update({ status: next }).eq('id', orderId);
+  if (error) return showBanner(error.message);
+
+  await refreshAll(false);
+}
+
+async function deleteOrder(orderId){
+  if (!confirm('Delete this order? This cannot be undone.')) return;
+  const { error } = await supabaseClient.from('orders').delete().eq('id', orderId);
+  if (error) return showBanner(error.message);
+  await refreshAll(false);
+}
+
+
+/* ========= Operators ========= */
+let selectedOperatorId = null;
+
+function renderOperators(){
+  const list = $('operatorsList');
+  const editor = $('operatorEditor');
+  if (!list || !editor) return;
+
+  list.innerHTML = '';
+
+  if (!state.operators.length){
+    list.innerHTML = `<div class="muted">No operators yet. Click “Add operator”.</div>`;
+    editor.innerHTML = `<div class="muted">Select an operator…</div>`;
+    return;
+  }
+
+  state.operators.forEach(o => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.cursor = 'pointer';
+    row.innerHTML = `
+      <div class="left">
+        <div class="title">${escapeHtml(o.name)}</div>
+        <div class="sub">Payout: ${Number(o.payout_rate||30).toFixed(1)}% • ${o.active===false?'Inactive':'Active'}</div>
+      </div>
+      <div class="badges">
+        <button class="btn btn-mini ghost" data-op="${o.id}" data-act="select">Edit</button>
+        <button class="btn btn-mini outline" data-op="${o.id}" data-act="delete">Remove</button>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+
+  list.querySelectorAll('button[data-act]').forEach(btn=>{
+    btn.addEventListener('click', async (e)=>{
+      e.stopPropagation();
+      const opId = btn.dataset.op;
+      const act = btn.dataset.act;
+      if (act === 'select') return selectOperator(opId);
+      if (act === 'delete') return deleteOperator(opId);
+    });
+  });
+
+  if (selectedOperatorId) selectOperator(selectedOperatorId);
+  else editor.innerHTML = `<div class="muted">Select an operator…</div>`;
+}
+
+function selectOperator(opId){
+  selectedOperatorId = opId;
+  const o = state.operators.find(x => x.id === opId);
+  const editor = $('operatorEditor');
+  if (!o || !editor) return;
+
+  editor.innerHTML = `
+    <label class="field">
+      <span>Name</span>
+      <input id="opName" value="${escapeHtml(o.name||'')}" />
+    </label>
+    <label class="field">
+      <span>Payout rate (%)</span>
+      <input id="opRate" type="number" step="0.1" value="${escapeHtml(String(o.payout_rate ?? 30))}" />
+    </label>
+    <label class="field">
+      <span>Active</span>
+      <select id="opActive">
+        <option value="true">Active</option>
+        <option value="false">Inactive</option>
+      </select>
+    </label>
+    <div class="auth-actions">
+      <button class="btn primary" id="btnSaveOp">Save</button>
+    </div>
+    <div class="muted" style="margin-top:10px;">Operator ID: ${escapeHtml(o.id)}</div>
+  `;
+
+  const activeSel = editor.querySelector('#opActive');
+  if (activeSel) activeSel.value = (o.active===false) ? 'false' : 'true';
+
+  editor.querySelector('#btnSaveOp')?.addEventListener('click', async ()=>{
+    const name = editor.querySelector('#opName')?.value?.trim();
+    const rate = Number(editor.querySelector('#opRate')?.value || 30);
+    const active = editor.querySelector('#opActive')?.value === 'true';
+    const { error } = await supabaseClient.from('operators').update({ name, payout_rate: rate, active }).eq('id', o.id);
+    if (error) return showBanner(error.message);
+    await refreshAll(false);
+  });
+}
+
+async function addOperator(){
+  const name = prompt('Operator name:');
+  if (!name) return;
+  const rate = Number(prompt('Payout rate (%):', '30') || 30);
+  const { error } = await supabaseClient.from('operators').insert({ name, payout_rate: rate, active: true });
+  if (error) return showBanner(error.message);
+  await refreshAll(false);
+  // select the newest
+  selectedOperatorId = state.operators[state.operators.length-1]?.id || null;
+}
+
+async function deleteOperator(opId){
+  const o = state.operators.find(x=>x.id===opId);
+  if (!o) return;
+  if (!confirm(`Remove operator "${o.name}"?`)) return;
+  const { error } = await supabaseClient.from('operators').delete().eq('id', opId);
+  if (error) return showBanner(error.message);
+  if (selectedOperatorId === opId) selectedOperatorId = null;
+  await refreshAll(false);
+}
+
+/* ========= Map ========= */ ========= */
 function ensureMap(){
   if (state.map) return state.map;
 
@@ -646,86 +1032,96 @@ async function renderMap(){
   ensureMap();
   if (!state.map) return;
 
+  // Leaflet needs this when shown from a hidden tab
+  try { state.map.invalidateSize(); } catch(e){}
+
   clearMapLayers();
 
   const orderById = new Map(state.orders.map(o => [o.id, o]));
   const opsById = new Map(state.operators.map(o => [o.id, o]));
 
-  const opFilter = $('mapOperator').value || 'all';
-  const dayFilter = $('mapDay').value || 'all';
+  const opFilter = $('mapOperator')?.value || 'all';
+  const range = $('mapRange')?.value || 'week';
+  const { startISO, endISO } = getRangeWindow(range);
 
-  const weekStartISO = toISODate(state.weekStart);
-  const weekEndISO = toISODate(addDays(state.weekStart,6));
+  const rows = state.assignments
+    .filter(a => a.service_date >= startISO && a.service_date <= endISO)
+    .filter(a => opFilter === 'all' ? true : (a.operator_id === opFilter))
+    .sort((a,b)=> a.service_date.localeCompare(b.service_date) || (Number(a.stop_order||0)-Number(b.stop_order||0)));
 
-  let asn = state.assignments.filter(a => a.service_date >= weekStartISO && a.service_date <= weekEndISO);
-  if (dayFilter !== 'all') asn = asn.filter(a => a.service_date === dayFilter);
-  if (opFilter !== 'all') asn = asn.filter(a => a.operator_id === opFilter);
+  const points = [];
+  const byOpDay = new Map(); // key opId|date -> [{lat,lng,label}]
 
-  // Build routes per operator per day
-  const groups = {};
-  for (const a of asn){
-    const key = `${a.operator_id || 'unassigned'}__${a.service_date}`;
-    (groups[key] = groups[key] || []).push(a);
+  for (const a of rows){
+    const ord = orderById.get(a.order_id);
+    if (!ord) continue;
+    const lat = Number(ord.lat);
+    const lng = Number(ord.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+    const opId = a.operator_id || 'unassigned';
+    const key = `${opId}|${a.service_date}`;
+    if (!byOpDay.has(key)) byOpDay.set(key, []);
+    byOpDay.get(key).push({ lat, lng, a, ord });
+
+    points.push([lat,lng]);
   }
 
-  const boundsPts = [];
+  const empty = $('mapEmpty');
+  if (!points.length){
+    if (empty) empty.style.display = 'grid';
+    state.map.setView([39.1, -94.58], 10);
+    return;
+  }
+  if (empty) empty.style.display = 'none';
 
-  for (const key of Object.keys(groups)){
-    const items = groups[key].sort((a,b)=>(a.sequence||0)-(b.sequence||0));
-    const [opId, dateISO] = key.split('__');
+  // Markers + popups
+  for (const [key, items] of byOpDay.entries()){
+    const [opId, date] = key.split('|');
     const color = state.operatorColors[opId] || '#9099a8';
-    const pts = [];
+    for (const item of items){
+      const ord = item.ord;
+      const a = item.a;
+      const op = opsById.get(a.operator_id);
+      const title = ord.biz_name || ord.business_name || ord.contact_name || 'Stop';
+      const popup = `
+        <div style="min-width:220px">
+          <div style="font-weight:700; margin-bottom:4px;">${escapeHtml(title)}</div>
+          <div style="color:#444; font-size:12px; margin-bottom:6px;">${escapeHtml(ord.address||'')}</div>
+          <div style="font-size:12px;">
+            <div><b>Date:</b> ${escapeHtml(a.service_date)}</div>
+            <div><b>Operator:</b> ${escapeHtml(op?.name || 'Unassigned')}</div>
+            <div><b>Cadence:</b> ${escapeHtml(ord.cadence||'')}</div>
+            <div><b>Amount:</b> ${escapeHtml(fmtMoney(ord.monthly_total || ord.due_today || 0))}</div>
+          </div>
+        </div>
+      `;
 
-    for (const a of items){
-      const o = orderById.get(a.order_id);
-      if (!o) continue;
-      const lat = Number(o.lat);
-      const lng = Number(o.lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-
-      pts.push([lat,lng]);
-      boundsPts.push([lat,lng]);
-
-      const marker = L.circleMarker([lat,lng], {
+      const marker = L.circleMarker([Number(ord.lat), Number(ord.lng)], {
         radius: 8,
         color: color,
         weight: 2,
         fillColor: color,
-        fillOpacity: 0.55
+        fillOpacity: 0.85
       }).addTo(state.map);
 
-      marker.bindPopup(`
-        <div style="font-family:system-ui">
-          <div style="font-weight:800;margin-bottom:4px">${escapeHtml(o.biz_name || 'Job')}</div>
-          <div style="color:rgba(255,255,255,.75);font-size:12px;margin-bottom:8px">${escapeHtml(o.address || '')}</div>
-          <div style="font-size:12px">
-            <b>${escapeHtml(opsById.get(a.operator_id)?.name || 'Unassigned')}</b> • ${escapeHtml(dateISO)}
-          </div>
-        </div>
-      `);
-
+      marker.bindPopup(popup);
       state.mapLayers.markers.push(marker);
     }
-
-    if (pts.length >= 2){
-      const line = L.polyline(pts, { color: color, weight: 4, opacity: 0.55 }).addTo(state.map);
-      state.mapLayers.lines.push(line);
-    }
   }
 
-  // empty overlay
-  const empty = $('mapEmpty');
-  if (!boundsPts.length){
-    empty.style.display='flex';
-    // still ensure map sizes correctly
-    setTimeout(()=>state.map.invalidateSize(), 50);
-    return;
+  // Route lines by operator/day
+  for (const [key, items] of byOpDay.entries()){
+    if (items.length < 2) continue;
+    const [opId] = key.split('|');
+    const color = state.operatorColors[opId] || '#9099a8';
+    const latlngs = items.map(it => [it.lat, it.lng]);
+    const line = L.polyline(latlngs, { color, weight: 3, opacity: 0.7 }).addTo(state.map);
+    state.mapLayers.lines.push(line);
   }
-  empty.style.display='none';
 
-  const b = L.latLngBounds(boundsPts);
-  state.map.fitBounds(b.pad(0.18));
-  setTimeout(()=>state.map.invalidateSize(), 50);
+  const bounds = L.latLngBounds(points);
+  state.map.fitBounds(bounds.pad(0.18));
 }
 
 function clearMapLayers(){

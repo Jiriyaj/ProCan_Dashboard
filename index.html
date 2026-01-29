@@ -109,16 +109,16 @@
           </div>
         </div>
 
-        <div class="grid two">
+        <div class="grid three">
           <div class="card">
             <div class="card-head">
               <div>
-                <div class="card-title">Today’s route</div>
-                <div class="card-sub">What needs serviced today</div>
+                <div class="card-title">This week’s routes</div>
+                <div class="card-sub">All scheduled stops for this week</div>
               </div>
               <button class="btn ghost" id="btnGoSchedule">Open schedule</button>
             </div>
-            <div class="list" id="todayList"></div>
+            <div class="list" id="weekRoutesList"></div>
           </div>
 
           <div class="card">
@@ -131,6 +131,23 @@
             <div class="list" id="payoutList"></div>
           </div>
         </div>
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Unassigned orders</div>
+                <div class="card-sub">Paid orders not yet scheduled</div>
+              </div>
+              <button class="btn ghost" id="btnGoOrders">Open orders</button>
+            </div>
+            <div class="list" id="unassignedList"></div>
+            <div class="divider"></div>
+            <div class="workload">
+              <div class="workload-title">Weekly workload</div>
+              <div class="workload-bar"><div class="workload-fill" id="workloadFill"></div></div>
+              <div class="workload-sub" id="workloadSub">—</div>
+            </div>
+          </div>
+
       </section>
 
       <!-- SCHEDULE -->
@@ -139,11 +156,12 @@
           <div class="card-head">
             <div>
               <div class="card-title">Schedule</div>
-              <div class="card-sub">Auto-assigned routes. Drag to reassign (phase 2).</div>
+              <div class="card-sub">Weekly dispatch list. Assign/reassign and edit jobs.</div>
             </div>
             <div class="filters">
               <select id="filterOperator"></select>
-              <select id="filterDay"></select>
+              <select id="filterRange"></select>
+              <button class="btn ghost" id="btnPrintSchedule">Print PDF</button>
             </div>
           </div>
           <div class="schedule" id="scheduleBoard"></div>
@@ -160,7 +178,7 @@
             </div>
             <div class="filters">
               <select id="mapOperator"></select>
-              <select id="mapDay"></select>
+              <select id="mapRange"></select>
               <button class="btn ghost" id="btnGeocodeMissing">Geocode missing</button>
             </div>
           </div>
@@ -189,6 +207,7 @@
             <div class="filters">
               <select id="ordersStatus"></select>
               <input id="ordersSearch" type="search" placeholder="Search business / address…" />
+              <button class="btn ghost" id="btnBulkAutoAssign">Auto-assign week</button>
             </div>
           </div>
           <div class="table" id="ordersTable"></div>
@@ -206,7 +225,7 @@
             <button class="btn primary" id="btnAddOperator">Add operator</button>
           </div>
 
-          <div class="grid two">
+          <div class="grid three">
             <div class="card inner">
               <div class="card-title-sm">Operators</div>
               <div class="list" id="operatorsList"></div>
