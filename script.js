@@ -836,38 +836,37 @@ async function renderDispatchPanel(){
   if (!panel) return;
 
   const todayISO = new Date().toISOString().split('T')[0];
-  const date = String(document.getElementById('dispatchDate')?.value || todayISO);
+  const date = String(
+    document.getElementById('dispatchDate')?.value ||
+    document.getElementById('mapDate')?.value ||
+    todayISO
+  );
 
+  // Dispatch = single mental model: Date → Operators → Stops → Map
   panel.innerHTML = `
-    <div class="dispatch-grid">
-      <div class="dispatch-sidebar">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-          <div style="font-weight:800;">Dispatch</div>
-          <div style="display:flex; gap:8px; align-items:center;">
-            <input id="dispatchDate" type="date" value="${date}" style="padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+    <div class="dispatch-shell">
+      <div class="dispatch-topbar">
+        <div class="dispatch-title">
+          <div class="dispatch-title-main">Dispatch</div>
+          <div class="dispatch-title-sub">Daily operations console</div>
+        </div>
+
+        <div class="dispatch-controls">
+          <label class="control">
+            <span>Date</span>
+            <input id="dispatchDate" type="date" value="${escapeHtml(date)}">
+          </label>
+
+          <div class="control-group">
+            <button class="btn-secondary" type="button" onclick="renderDispatchPanel()">Refresh</button>
+            <button class="btn-primary" type="button" onclick="generateDailyJobsFromRoutes()">Generate jobs</button>
+            <button class="btn-secondary" type="button" onclick="optimizeAllOperators()">Optimize all</button>
+            <button class="btn-secondary" type="button" onclick="switchTab('map'); __mapFocus = { type:'day', date: '${escapeHtml(date)}' }; renderMapPanel();">Map</button>
           </div>
         </div>
-
-        <div style="margin-top:10px; display:grid; gap:8px;">
-          <button class="btn-secondary" type="button" onclick="renderDispatchPanel()">Refresh</button>
-          <button class="btn-primary" type="button" onclick="generateDailyJobsFromRoutes()">Generate today's jobs</button>
-          <button class="btn-secondary" type="button" onclick="optimizeAllOperators()">Optimize all routes</button>
-        </div>
-
-        <div style="margin-top:12px; font-size:12px; opacity:.8; line-height:1.4;">
-          <div style="font-weight:700; margin-bottom:6px;">Level 3 dispatch</div>
-          <ul style="margin:0; padding-left:18px;">
-            <li>Time windows + service durations</li>
-            <li>Operator mobile workflow (start/complete + photos)</li>
-            <li>Audit trail (job_events)</li>
-            <li>Routing order optimization</li>
-          </ul>
-        </div>
       </div>
 
-      <div>
-        <div class="dispatch-board" id="dispatchBoard"></div>
-      </div>
+      <div class="dispatch-columns" id="dispatchBoard"></div>
     </div>
   `;
 
@@ -875,7 +874,7 @@ async function renderDispatchPanel(){
   if (!board) return;
 
   const d = String(document.getElementById('dispatchDate')?.value || todayISO);
-  const dayJobs = state.jobs.filter(j => String(j.job_date) === d);
+  const dayJobs = (state.jobs||[]).filter(j => String(j.job_date) === d);
 
   const ops = (state.reps || []).filter(r => r.active !== false);
   if (!ops.length){
@@ -890,50 +889,245 @@ async function renderDispatchPanel(){
     else unassigned.push(j);
   }
 
-  const renderCol = (title, opId, jobs) => {
-    jobs.sort((a,b) => (a.stop_order||999) - (b.stop_order||999));
+  const normalizeOrders = (jobs) => {
+    jobs.sort((a,b) => (Number(a.stop_order||9999) - Number(b.stop_order||9999)) || String(a.id).localeCompare(String(b.id)));
+    jobs.forEach((j, idx) => { j.stop_order = idx + 1; });
+  };
+
+  const colMetrics = (jobs) => {
+    let svc = 0;
+    let tw = 0;
+    let completed = 0;
+    for (const j of jobs){
+      const t = jobTarget(j);
+      svc += Number(t.service_minutes || 0);
+      if (t.tw_start || t.tw_end) tw += 1;
+      if (String(j.status||'').toLowerCase() === 'completed') completed += 1;
+    }
+    return { svc, tw, completed, total: jobs.length };
+  };
+
+  const renderStopCard = (j, opId) => {
+    const t = jobTarget(j);
+    const tw = (t.tw_start || t.tw_end) ? `${fmtTime(t.tw_start)}–${fmtTime(t.tw_end)}` : '';
+    const status = String(j.status || 'scheduled');
+
     return `
-      <div class="dispatch-col">
-        <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
-          <h3>${escapeHtml(title)}</h3>
-          <div style="opacity:.75; font-size:12px;">Stops: ${jobs.length}</div>
+      <div class="stop-card"
+           draggable="true"
+           data-job-id="${escapeHtml(String(j.id))}"
+           data-op-id="${escapeHtml(String(opId||''))}">
+        <div class="stop-head">
+          <div class="stop-title">
+            <span class="stop-order">#${escapeHtml(String(j.stop_order ?? 999))}</span>
+            <span class="stop-name">${escapeHtml(t.label)}</span>
+          </div>
+          <div class="stop-badge">${jobBadge(status)}</div>
         </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-          ${opId ? `<button class="btn-secondary btn-small" type="button" onclick="optimizeOperator('${opId}')">Optimize</button>` : ''}
+
+        <div class="stop-meta">${escapeHtml(t.address || '')}</div>
+        <div class="stop-meta">
+          ${tw ? `Window: <b>${escapeHtml(tw)}</b> • ` : ''}Svc: <b>${escapeHtml(String(t.service_minutes||15))}m</b>
         </div>
-        ${jobs.map(j => {
-          const t = jobTarget(j);
-          const tw = (t.tw_start || t.tw_end) ? `${fmtTime(t.tw_start)}-${fmtTime(t.tw_end)}` : '';
-          return `
-            <div class="stop-card">
-              <div style="display:flex; justify-content:space-between; gap:10px;">
-                <div style="font-weight:800;">#${escapeHtml(j.stop_order ?? 999)} — ${escapeHtml(t.label)}</div>
-                <div>${jobBadge(j.status)}</div>
-              </div>
-              <div class="stop-meta">${escapeHtml(t.address)}</div>
-              <div class="stop-meta">${tw ? `Window: <b>${escapeHtml(tw)}</b> • ` : ''}Svc: <b>${escapeHtml(String(t.service_minutes||15))}m</b></div>
-              <div class="stop-actions">
-                <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','en_route')">En route</button>
-                <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','in_progress')">Start</button>
-                <button class="btn-primary btn-small" type="button" onclick="setJobStatus('${j.id}','completed')">Complete</button>
-                <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','skipped')">Skip</button>
-                <button class="btn-secondary btn-small" type="button" onclick="openPhotoUpload('${j.id}')">Photo</button>
-                ${opId ? `<button class="btn-secondary btn-small" type="button" onclick="openReassign('${j.id}')">Reassign</button>` : `<button class="btn-secondary btn-small" type="button" onclick="openReassign('${j.id}')">Assign</button>`}
-              </div>
-            </div>
-          `;
-        }).join('')}
+
+        <div class="stop-actions">
+          <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','en_route')">En route</button>
+          <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','in_progress')">Start</button>
+          <button class="btn-primary btn-small" type="button" onclick="setJobStatus('${j.id}','completed')">Complete</button>
+          <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','skipped')">Skip</button>
+          <button class="btn-secondary btn-small" type="button" onclick="openPhotoUpload('${j.id}')">Photo</button>
+          <button class="btn-secondary btn-small" type="button" onclick="openReassign('${j.id}')">${opId ? 'Reassign' : 'Assign'}</button>
+          <button class="btn-secondary btn-small" type="button" onclick="focusJobOnMap('${j.id}', '${escapeHtml(d)}')">Map</button>
+        </div>
       </div>
     `;
   };
 
+  const renderColumn = (title, opId, jobs, isUnassigned=false) => {
+    normalizeOrders(jobs);
+    const m = colMetrics(jobs);
+
+    const headRight = isUnassigned
+      ? `<div class="col-metrics"><span>${m.total} stops</span></div>`
+      : `
+        <div class="col-metrics">
+          <span>${m.completed}/${m.total}</span>
+          <span>${m.svc ? `${m.svc}m` : '—'}</span>
+          <span>${m.tw ? `${m.tw} windows` : '—'}</span>
+        </div>
+      `;
+
+    const tools = isUnassigned ? '' : `
+      <div class="col-tools">
+        <button class="btn-secondary btn-small" type="button" onclick="optimizeOperator('${opId}')">Optimize</button>
+        <button class="btn-secondary btn-small" type="button" onclick="focusOperatorOnMap('${opId}', '${escapeHtml(d)}')">View map</button>
+      </div>
+    `;
+
+    return `
+      <section class="dispatch-column ${isUnassigned ? 'is-unassigned' : ''}"
+               data-drop-op-id="${escapeHtml(String(opId||''))}">
+        <header class="dispatch-col-head">
+          <div class="col-title">
+            <div class="col-name">${escapeHtml(title)}</div>
+            ${headRight}
+          </div>
+          ${tools}
+        </header>
+
+        <div class="dispatch-dropzone" data-drop-op-id="${escapeHtml(String(opId||''))}">
+          ${jobs.length ? jobs.map(j => renderStopCard(j, opId)).join('') : `<div class="col-empty">No stops</div>`}
+        </div>
+      </section>
+    `;
+  };
+
   const cols = [];
-  cols.push(renderCol('Unassigned', null, unassigned));
-  for (const op of ops){ cols.push(renderCol(op.name, op.id, jobsByOp.get(op.id) || [])); }
+  cols.push(renderColumn('Unassigned', '', unassigned, true));
+  for (const op of ops){ cols.push(renderColumn(op.name, op.id, jobsByOp.get(op.id) || [], false)); }
   board.innerHTML = cols.join('');
+
+  attachDispatchDnD(d);
+}
+window.renderDispatchPanel = renderDispatchPanel;
+
+// Drag/drop: move stops between operators and reorder within a column.
+function attachDispatchDnD(dateISO){
+  const board = document.getElementById('dispatchBoard');
+  if (!board) return;
+
+  const getDayJobsByOp = () => {
+    const dayJobs = (state.jobs||[]).filter(j => String(j.job_date) === String(dateISO));
+    const groups = new Map();
+    for (const j of dayJobs){
+      const op = j.operator_id ? String(j.operator_id) : '';
+      if (!groups.has(op)) groups.set(op, []);
+      groups.get(op).push(j);
+    }
+    // sort by stop_order
+    for (const [k, arr] of groups){
+      arr.sort((a,b) => (Number(a.stop_order||9999) - Number(b.stop_order||9999)) || String(a.id).localeCompare(String(b.id)));
+    }
+    return groups;
+  };
+
+  let dragJobId = null;
+
+  board.querySelectorAll('.stop-card').forEach(card => {
+    card.addEventListener('dragstart', (e) => {
+      dragJobId = card.getAttribute('data-job-id');
+      card.classList.add('dragging');
+      try{ e.dataTransfer.setData('text/plain', dragJobId); } catch(_){}
+      try{ e.dataTransfer.effectAllowed = 'move'; } catch(_){}
+    });
+    card.addEventListener('dragend', () => {
+      dragJobId = null;
+      card.classList.remove('dragging');
+      board.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+    });
+    // Allow dropping onto a card to insert before it
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      card.classList.add('drop-target');
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drop-target'));
+    card.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const jobId = dragJobId || (function(){ try{return e.dataTransfer.getData('text/plain')}catch(_){return null}})();
+      if (!jobId) return;
+
+      const targetJobId = card.getAttribute('data-job-id');
+      const targetOpId = card.getAttribute('data-op-id') || '';
+      await moveJob(jobId, targetOpId, targetJobId, dateISO);
+    });
+  });
+
+  // Dropzone drop = append to end
+  board.querySelectorAll('.dispatch-dropzone').forEach(zone => {
+    zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drop-target'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drop-target'));
+    zone.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      zone.classList.remove('drop-target');
+      const jobId = dragJobId || (function(){ try{return e.dataTransfer.getData('text/plain')}catch(_){return null}})();
+      if (!jobId) return;
+      const targetOpId = zone.getAttribute('data-drop-op-id') || '';
+      await moveJob(jobId, targetOpId, null, dateISO);
+    });
+  });
+
+  async function moveJob(jobId, targetOpId, insertBeforeJobId, dateISO){
+    // Find job in state
+    const job = (state.jobs||[]).find(j => String(j.id) === String(jobId));
+    if (!job) return;
+
+    const fromOp = job.operator_id ? String(job.operator_id) : '';
+    const toOp = String(targetOpId || '');
+
+    // Update operator_id immediately in memory
+    job.operator_id = toOp || null;
+
+    // Recompute ordering within the destination column (+ source column)
+    const groups = getDayJobsByOp();
+
+    const dest = groups.get(toOp) || [];
+    // Ensure job is in dest
+    const exists = dest.find(j => String(j.id) === String(jobId));
+    if (!exists) dest.push(job);
+
+    // Remove from source if different
+    if (fromOp !== toOp){
+      const src = groups.get(fromOp) || [];
+      const idx = src.findIndex(j => String(j.id) === String(jobId));
+      if (idx >= 0) src.splice(idx, 1);
+      groups.set(fromOp, src);
+    }
+
+    // If inserting before another card in dest
+    if (insertBeforeJobId){
+      const i = dest.findIndex(j => String(j.id) === String(jobId));
+      if (i >= 0) dest.splice(i, 1);
+      const beforeIdx = dest.findIndex(j => String(j.id) === String(insertBeforeJobId));
+      if (beforeIdx >= 0) dest.splice(beforeIdx, 0, job);
+      else dest.push(job);
+    }
+
+    // normalize stop_order
+    dest.forEach((j, idx) => { j.stop_order = idx + 1; });
+    groups.set(toOp, dest);
+
+    const updates = [];
+    // Persist job operator_id + stop_order for affected groups (src + dest)
+    const affectedOps = new Set([fromOp, toOp]);
+    for (const opId of affectedOps){
+      const arr = groups.get(opId) || [];
+      arr.forEach((j, idx) => {
+        updates.push({ id: j.id, operator_id: opId || null, stop_order: idx + 1 });
+      });
+    }
+
+    // Deduplicate by id (last write wins)
+    const byId = new Map();
+    for (const u of updates) byId.set(String(u.id), u);
+    const payload = Array.from(byId.values());
+
+    try{
+      if (supabaseClient && payload.length){
+        // Update sequentially to keep it simple/reliable
+        for (const u of payload){
+          await supabaseClient.from('jobs').update({ operator_id: u.operator_id, stop_order: u.stop_order }).eq('id', u.id);
+        }
+      }
+    }catch(err){
+      console.warn('moveJob persist failed', err);
+    }
+
+    // Re-render dispatch quickly and keep map in sync
+    renderDispatchPanel();
+    try{ renderMapPanel(); } catch(_){}
+  }
 }
 
-window.renderDispatchPanel = renderDispatchPanel;
 
 window.setJobStatus = async function(jobId, status){
   try{
@@ -1352,33 +1546,72 @@ window.confirmScheduleLead = async function(leadId){
 // ==============================
 // Map
 // ==============================
-let __leaflet = { map: null, markers: [] };
+let __leaflet = { map: null, markers: [], lines: [], activeOpId: null, activeJobId: null };
 
-function clearMarkers(){
+function clearMapLayers(){
   for (const m of (__leaflet.markers||[])){
     try{ m.remove(); } catch(_){}
   }
+  for (const l of (__leaflet.lines||[])){
+    try{ l.remove(); } catch(_){}
+  }
   __leaflet.markers = [];
+  __leaflet.lines = [];
 }
 
-async function renderMapPanel(){
+async async function renderMapPanel(){
   const panel = document.getElementById('mapPanel');
   if (!panel) return;
 
   const todayISO = new Date().toISOString().split('T')[0];
-  const date = String(document.getElementById('mapDate')?.value || (document.getElementById('dispatchDate')?.value) || todayISO);
+  const date = String(
+    document.getElementById('mapDate')?.value ||
+    document.getElementById('dispatchDate')?.value ||
+    todayISO
+  );
+
+  const ops = (state.reps || []).filter(r => r.active !== false);
+
+  // keep selected operator across renders
+  const selectedOp = String(window.__mapSelectedOpId || '');
+  const focus = window.__mapFocus || null;
 
   panel.innerHTML = `
-    <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px;">
-      <div style="font-weight:800;">Map</div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <input id="mapDate" type="date" value="${date}" style="padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
-        <button class="btn-secondary btn-small" type="button" onclick="renderMapPanel()">Refresh</button>
+    <div class="map-shell">
+      <div class="map-topbar">
+        <div class="map-title">
+          <div class="map-title-main">Map</div>
+          <div class="map-title-sub">Pins + routes for ${escapeHtml(date)}</div>
+        </div>
+
+        <div class="map-controls">
+          <label class="control">
+            <span>Date</span>
+            <input id="mapDate" type="date" value="${escapeHtml(date)}">
+          </label>
+
+          <label class="control">
+            <span>Operator</span>
+            <select id="mapOperator">
+              <option value="">All</option>
+              ${ops.map(o => `<option value="${escapeHtml(String(o.id))}" ${selectedOp===String(o.id) ? 'selected' : ''}>${escapeHtml(o.name)}</option>`).join('')}
+            </select>
+          </label>
+
+          <div class="control-group">
+            <button class="btn-secondary btn-small" type="button" onclick="renderMapPanel()">Refresh</button>
+            <button class="btn-secondary btn-small" type="button" onclick="switchTab('dispatch')">Back</button>
+          </div>
+        </div>
       </div>
-    </div>
-    <div id="leafletMap"></div>
-    <div style="opacity:.75; font-size:12px; margin-top:10px; line-height:1.4;">
-      Pins: scheduled jobs (for selected date) + leads with coordinates.
+
+      <div id="leafletMap" class="leaflet-wrap"></div>
+
+      <div class="map-legend">
+        <span class="legend-dot legend-job"></span> Scheduled job
+        <span class="legend-dot legend-lead"></span> Lead
+        <span class="legend-dot legend-complete"></span> Completed
+      </div>
     </div>
   `;
 
@@ -1389,52 +1622,167 @@ async function renderMapPanel(){
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap'
     }).addTo(__leaflet.map);
-    __leaflet.map.setView([37.208957, -93.292299], 11); // Springfield, MO-ish default; adjust later
+    __leaflet.map.setView([37.208957, -93.292299], 11); // Springfield default
   } else {
-    // Leaflet needs invalidateSize when container re-renders
-    setTimeout(() => { try{ __leaflet.map.invalidateSize(); } catch(_){} }, 50);
+    setTimeout(() => { try{ __leaflet.map.invalidateSize(); } catch(_){} }, 60);
   }
 
-  clearMarkers();
+  const palette = ['#7aa2c9','#9aa3aa','#9ee6b8','#c9d0d6','#d1b07a','#b38bdc'];
+  const opColor = (opId) => {
+    if (!opId) return '#9aa3aa';
+    const s = String(opId);
+    let h = 0; for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) >>> 0;
+    return palette[h % palette.length];
+  };
 
-  const jobs = (state.jobs||[]).filter(j => String(j.job_date) === date);
+  clearMapLayers();
+
+  const opSelect = document.getElementById('mapOperator');
+  if (opSelect){
+    opSelect.addEventListener('change', () => {
+      window.__mapSelectedOpId = String(opSelect.value || '');
+      // clearing focus if user manually filters
+      window.__mapFocus = null;
+      renderMapPanel();
+    });
+  }
+
+  const filterOpId = String(document.getElementById('mapOperator')?.value || '');
+  const jobsAll = (state.jobs||[]).filter(j => String(j.job_date) === date);
+  const jobs = filterOpId ? jobsAll.filter(j => String(j.operator_id||'') === filterOpId) : jobsAll;
+
   const leads = (state.leads||[]).filter(l => Number.isFinite(Number(l.lat)) && Number.isFinite(Number(l.lng)));
 
   const points = [];
 
+  // Route lines: group by operator and draw ordered polyline
+  const byOp = new Map();
+  for (const j of jobs){
+    const opId = String(j.operator_id || '');
+    if (!byOp.has(opId)) byOp.set(opId, []);
+    byOp.get(opId).push(j);
+  }
+  for (const [opId, arr] of byOp){
+    arr.sort((a,b) => (Number(a.stop_order||9999) - Number(b.stop_order||9999)) || String(a.id).localeCompare(String(b.id)));
+    const coords = [];
+    for (const j of arr){
+      const t = jobTarget(j);
+      const lat = Number(t.lat), lng = Number(t.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      coords.push([lat,lng]);
+      points.push([lat,lng]);
+    }
+    if (coords.length >= 2){
+      const line = L.polyline(coords, { weight: 4, opacity: 0.55, dashArray: '8 10', color: opColor(opId) }).addTo(__leaflet.map);
+      __leaflet.lines.push(line);
+    }
+  }
+
+  // Job pins
   for (const j of jobs){
     const t = jobTarget(j);
-    if (!Number.isFinite(Number(t.lat)) || !Number.isFinite(Number(t.lng))) continue;
-    points.push([Number(t.lat), Number(t.lng)]);
+    const lat = Number(t.lat), lng = Number(t.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
     const op = repById(j.operator_id);
+    const status = String(j.status||'scheduled').toLowerCase();
+    const isDone = status === 'completed';
+
     const popup = `
       <div style="font-size:12px;">
         <div style="font-weight:800;">${escapeHtml(t.label)}</div>
         <div style="opacity:.85;">${escapeHtml(t.address)}</div>
-        <div style="opacity:.8; margin-top:6px;">${escapeHtml(String(j.status||'scheduled'))} ${op ? `• ${escapeHtml(op.name)}` : ''}</div>
+        <div style="opacity:.85; margin-top:6px;">
+          ${escapeHtml(String(j.status||'scheduled'))}
+          ${op ? ` • ${escapeHtml(op.name)}` : ''}
+          ${t.tw_start || t.tw_end ? ` • ${escapeHtml(fmtTime(t.tw_start))}-${escapeHtml(fmtTime(t.tw_end))}` : ''}
+        </div>
+        <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="btn-secondary btn-small" type="button" onclick="switchTab('dispatch'); renderDispatchPanel();">Open in dispatch</button>
+        </div>
       </div>
     `;
-    const m = L.marker([Number(t.lat), Number(t.lng)]).addTo(__leaflet.map).bindPopup(popup);
-    __leaflet.markers.push(m);
+
+    const c = opColor(j.operator_id);
+    const marker = L.circleMarker([lat,lng], {
+      radius: 8,
+      weight: 2,
+      opacity: 0.95,
+      color: c,
+      fillColor: c,
+      fillOpacity: isDone ? 0.25 : 0.55
+    }).addTo(__leaflet.map).bindPopup(popup);
+
+    marker.on('click', () => {
+      __leaflet.activeJobId = String(j.id);
+      window.__mapFocus = { type:'job', jobId: String(j.id), date };
+    });
+
+    __leaflet.markers.push(marker);
   }
 
+  // Leads pins (optional; not filtered by operator)
   for (const l of leads){
-    points.push([Number(l.lat), Number(l.lng)]);
+    const lat = Number(l.lat), lng = Number(l.lng);
+    points.push([lat,lng]);
+
     const popup = `
       <div style="font-size:12px;">
         <div style="font-weight:800;">${escapeHtml(l.biz_name || 'Lead')}</div>
-        <div style="opacity:.85;">${escapeHtml(l.address)}</div>
+        <div style="opacity:.85;">${escapeHtml(l.address || '')}</div>
         <div style="opacity:.8; margin-top:6px;">Lead: ${escapeHtml(l.status || 'new')}</div>
       </div>
     `;
-    const m = L.circleMarker([Number(l.lat), Number(l.lng)], { radius: 7, weight: 2 }).addTo(__leaflet.map).bindPopup(popup);
-    __leaflet.markers.push(m);
+    const marker = L.circleMarker([lat,lng], { radius: 6, weight: 2, opacity: 0.9, fillOpacity: 0.15 }).addTo(__leaflet.map).bindPopup(popup);
+    __leaflet.markers.push(marker);
   }
 
+  // Fit bounds
   if (points.length){
     try{ __leaflet.map.fitBounds(points, { padding: [30,30] }); } catch(_){}
   }
+
+  // Apply focus (operator/job)
+  try{
+    if (focus && focus.type === 'operator' && String(focus.opId||'') ){
+      const opId = String(focus.opId);
+      window.__mapSelectedOpId = opId;
+      // Re-render with filter (one-time)
+      if (String(document.getElementById('mapOperator')?.value||'') !== opId){
+        document.getElementById('mapOperator').value = opId;
+      }
+    }
+  }catch(_){}
+
+  // Job focus: pan and open popup
+  if (focus && focus.type === 'job' && focus.jobId){
+    const jobId = String(focus.jobId);
+    const job = (state.jobs||[]).find(j => String(j.id) === jobId);
+    if (job){
+      const t = jobTarget(job);
+      const lat = Number(t.lat), lng = Number(t.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)){
+        try{ __leaflet.map.setView([lat,lng], 14); } catch(_){}
+      }
+    }
+  }
 }
+window.renderMapPanel = renderMapPanel;
+
+// Dispatch → Map helpers
+window.focusOperatorOnMap = function(opId, dateISO){
+  window.__mapSelectedOpId = String(opId || '');
+  window.__mapFocus = { type: 'operator', opId: String(opId||''), date: String(dateISO||'') };
+  switchTab('map');
+  renderMapPanel();
+};
+
+window.focusJobOnMap = function(jobId, dateISO){
+  window.__mapFocus = { type:'job', jobId: String(jobId||''), date: String(dateISO||'') };
+  switchTab('map');
+  renderMapPanel();
+};
+
 
 window.renderMapPanel = renderMapPanel;
 
