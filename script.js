@@ -80,7 +80,7 @@ const state = {
 };
 
 const COLORS = [
-  '#28c7ff', '#ffb020', '#b084ff', '#ff4d4d', '#40ff99', '#9099a8', '#ffffff'
+  '#28c7ff', '#ffb020', '#b084ff', '#ff4d4d', '#9099a8', '#ffffff', '#d7dde7'
 ];
 
 /* ========= Boot ========= */
@@ -253,7 +253,12 @@ async function refreshAll(showBannerOnErrors){
 
   if (opsRes.error) return showBanner(opsRes.error.message);
   if (ordRes.error) return showBanner(ordRes.error.message);
-  if (asnRes.error) return showBanner(asnRes.error.message);
+  if (asnRes.error) {
+    const msg = asnRes.error.code === 'PGRST204'
+      ? `Assignments query failed: ${asnRes.error.message}. This usually means a missing column (e.g., stop_order). Run the latest supabase-schema.sql patch (adds assignments.stop_order).`
+      : asnRes.error.message;
+    return showBanner(msg);
+  }
 
   state.operators = opsRes.data || [];
   state.orders = ordRes.data || [];

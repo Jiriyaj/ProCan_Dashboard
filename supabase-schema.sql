@@ -56,3 +56,8 @@ BEGIN
       WITH CHECK (auth.role() = 'authenticated');
   END IF;
 END $$;
+
+
+-- 3) Assignments: ordering within a day
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS stop_order integer DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_assignments_date_order ON public.assignments(service_date, stop_order);
