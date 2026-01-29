@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ProCan J.A.I.D.A — Ops & Payout Tracker</title>
   <link rel="stylesheet" href="./styles.css?v=20260127-3" />
+  <!-- Leaflet (map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="icon" href="data:,">
 </head>
 <body>
@@ -168,12 +170,27 @@
               </div>
 
               <div class="tabs" style="margin-top: 18px;">
-                <button class="tab active" onclick="switchTab('orders')">Orders</button>
+                <button class="tab active" onclick="switchTab('dispatch')">Dispatch</button>
+                <button class="tab" onclick="switchTab('map')">Map</button>
+                <button class="tab" onclick="switchTab('leads')">Leads</button>
+                <button class="tab" onclick="switchTab('orders')">Orders</button>
                 <button class="tab" onclick="switchTab('routes')">Routes</button>
                 <button class="tab" onclick="switchTab('onboarding')">Onboarding</button>
               </div>
 
-              <div class="tab-content active" id="ordersTab">
+              <div class="tab-content active" id="dispatchTab">
+                <div id="dispatchPanel"></div>
+              </div>
+
+              <div class="tab-content" id="mapTab">
+                <div id="mapPanel"></div>
+              </div>
+
+              <div class="tab-content" id="leadsTab">
+                <div id="leadsPanel"></div>
+              </div>
+
+              <div class="tab-content" id="ordersTab">
                 <div id="ordersPanel"></div>
               </div>
               
@@ -195,6 +212,7 @@
 
   <!-- Supabase JS -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="./supabase-config.js"></script>
   <script defer  defer src="./script.js?v=20260127-3"></script>
 </body>

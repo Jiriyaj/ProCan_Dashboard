@@ -109,6 +109,9 @@ let state = {
   customers: [],
   routes: [],
   routeStops: [],
+  leads: [],
+  jobs: [],
+  jobPhotos: [],
   settings: { cycle_anchor: '2026-04-01', lock_window_days: 7 },
   config: DEFAULT_CONFIG
 };
@@ -528,6 +531,48 @@ async function syncFromSupabase() {
     }
   }
 
+  // Leads
+  {
+    const { data, error } = await supabaseClient.from('leads').select('*').order('updated_at', { ascending: false }).limit(1000);
+    if (error) {
+      if (isMissingTableError(error, 'leads')) {
+        state.leads = [];
+      } else {
+        throw error;
+      }
+    } else {
+      state.leads = data || [];
+    }
+  }
+
+  // Jobs (dispatch instances)
+  {
+    const { data, error } = await supabaseClient.from('jobs').select('*').order('job_date', { ascending: false }).limit(2000);
+    if (error) {
+      if (isMissingTableError(error, 'jobs')) {
+        state.jobs = [];
+      } else {
+        throw error;
+      }
+    } else {
+      state.jobs = data || [];
+    }
+  }
+
+  // Job Photos (pointers)
+  {
+    const { data, error } = await supabaseClient.from('job_photos').select('*').order('created_at', { ascending: false }).limit(2000);
+    if (error) {
+      if (isMissingTableError(error, 'job_photos')) {
+        state.jobPhotos = [];
+      } else {
+        throw error;
+      }
+    } else {
+      state.jobPhotos = data || [];
+    }
+  }
+
   // Settings (single-row key/value)
   {
     const { data, error } = await supabaseClient.from('settings').select('*');
@@ -660,19 +705,729 @@ function switchTab(tab) {
   if (btn) btn.classList.add('active');
 
   const contentId =
-    tab === 'orders' ? 'ordersTab'
+    tab === 'dispatch' ? 'dispatchTab'
+    : tab === 'map' ? 'mapTab'
+    : tab === 'leads' ? 'leadsTab'
+    : tab === 'orders' ? 'ordersTab'
     : tab === 'routes' ? 'routesTab'
     : tab === 'onboarding' ? 'onboardingTab'
-    : 'ordersTab';
+    : 'dispatchTab';
 
   document.getElementById(contentId)?.classList.add('active');
 
   // render lazy panels
+  if (tab === 'dispatch') renderDispatchPanel();
+  if (tab === 'map') renderMapPanel();
+  if (tab === 'leads') renderLeadsPanel();
   if (tab === 'orders') renderOrdersPanel();
   if (tab === 'routes') renderRoutesPanel();
   if (tab === 'onboarding') renderOnboardingPanel();
 }
 window.switchTab = switchTab;
+
+// ==============================
+// Dispatch (Level 3)
+// ==============================
+
+function fmtTime(t){
+  if (!t) return '';
+  const s = String(t);
+  return s.slice(0,5);
+}
+
+function jobBadge(status){
+  const s = String(status||'').toLowerCase();
+  if (s === 'completed') return '<span class="badge good">Completed</span>';
+  if (s === 'in_progress') return '<span class="badge warn">In progress</span>';
+  if (s === 'en_route') return '<span class="badge warn">En route</span>';
+  if (s === 'skipped' || s === 'cancelled') return '<span class="badge bad">Skipped</span>';
+  return '<span class="badge">Scheduled</span>';
+}
+
+function jobTarget(job){
+  if (job.customer_id){
+    const c = state.customers.find(x => x.id === job.customer_id);
+    return {
+      label: c?.biz_name || 'Customer',
+      address: c?.address || job.address || '',
+      lat: c?.lat ?? job.lat ?? null,
+      lng: c?.lng ?? job.lng ?? null,
+      tw_start: c?.tw_start ?? job.tw_start ?? null,
+      tw_end: c?.tw_end ?? job.tw_end ?? null,
+      service_minutes: c?.service_minutes ?? job.service_minutes ?? 15,
+      kind: 'customer'
+    };
+  }
+  if (job.lead_id){
+    const l = state.leads.find(x => x.id === job.lead_id);
+    return {
+      label: l?.biz_name || 'Lead',
+      address: l?.address || job.address || '',
+      lat: l?.lat ?? job.lat ?? null,
+      lng: l?.lng ?? job.lng ?? null,
+      tw_start: job.tw_start ?? l?.follow_up_time ?? null,
+      tw_end: job.tw_end ?? null,
+      service_minutes: job.service_minutes ?? 10,
+      kind: 'lead'
+    };
+  }
+  return { label: 'Stop', address: job.address || '', lat: job.lat ?? null, lng: job.lng ?? null, tw_start: job.tw_start ?? null, tw_end: job.tw_end ?? null, service_minutes: job.service_minutes ?? 15, kind: 'generic' };
+}
+
+function nearestNeighborOrder(stops){
+  // Greedy order by geographic distance (good enough + fast for field ops)
+  const pts = stops.filter(s => Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)));
+  if (pts.length <= 2) return stops.map(s => s.id);
+
+  const remaining = new Map(pts.map(p => [p.id, p]));
+  const ordered = [];
+  let current = pts[0];
+  ordered.push(current.id);
+  remaining.delete(current.id);
+
+  const dist2 = (a,b) => {
+    const dx = (Number(a.lat)-Number(b.lat));
+    const dy = (Number(a.lng)-Number(b.lng));
+    return dx*dx + dy*dy;
+  };
+
+  while (remaining.size){
+    let best = null;
+    let bestD = Infinity;
+    for (const p of remaining.values()){
+      const d = dist2(current, p);
+      if (d < bestD){ bestD = d; best = p; }
+    }
+    if (!best) break;
+    ordered.push(best.id);
+    remaining.delete(best.id);
+    current = best;
+  }
+
+  // Append any without coords after
+  const noCoords = stops.filter(s => !Number.isFinite(Number(s.lat)) || !Number.isFinite(Number(s.lng))).map(s => s.id);
+  return [...ordered, ...noCoords];
+}
+
+async function updateJob(jobId, patch){
+  if (!supabaseClient) throw new Error('Supabase not configured.');
+  const { error } = await supabaseClient.from('jobs').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', jobId);
+  if (error) throw error;
+}
+
+async function addJobEvent(jobId, event_type, detail){
+  if (!supabaseClient) return;
+  try{
+    await supabaseClient.from('job_events').insert({ job_id: jobId, actor_user_id: (await supabaseClient.auth.getUser())?.data?.user?.id || null, event_type, detail: detail || {} });
+  } catch(_){ /* non-fatal */ }
+}
+
+async function renderDispatchPanel(){
+  const panel = document.getElementById('dispatchPanel');
+  if (!panel) return;
+
+  const todayISO = new Date().toISOString().split('T')[0];
+  const date = String(document.getElementById('dispatchDate')?.value || todayISO);
+
+  panel.innerHTML = `
+    <div class="dispatch-grid">
+      <div class="dispatch-sidebar">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div style="font-weight:800;">Dispatch</div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input id="dispatchDate" type="date" value="${date}" style="padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+          </div>
+        </div>
+
+        <div style="margin-top:10px; display:grid; gap:8px;">
+          <button class="btn-secondary" type="button" onclick="renderDispatchPanel()">Refresh</button>
+          <button class="btn-primary" type="button" onclick="generateDailyJobsFromRoutes()">Generate today's jobs</button>
+          <button class="btn-secondary" type="button" onclick="optimizeAllOperators()">Optimize all routes</button>
+        </div>
+
+        <div style="margin-top:12px; font-size:12px; opacity:.8; line-height:1.4;">
+          <div style="font-weight:700; margin-bottom:6px;">Level 3 dispatch</div>
+          <ul style="margin:0; padding-left:18px;">
+            <li>Time windows + service durations</li>
+            <li>Operator mobile workflow (start/complete + photos)</li>
+            <li>Audit trail (job_events)</li>
+            <li>Routing order optimization</li>
+          </ul>
+        </div>
+      </div>
+
+      <div>
+        <div class="dispatch-board" id="dispatchBoard"></div>
+      </div>
+    </div>
+  `;
+
+  const board = document.getElementById('dispatchBoard');
+  if (!board) return;
+
+  const d = String(document.getElementById('dispatchDate')?.value || todayISO);
+  const dayJobs = state.jobs.filter(j => String(j.job_date) === d);
+
+  const ops = (state.reps || []).filter(r => r.active !== false);
+  if (!ops.length){
+    board.innerHTML = `<div class="empty-state">Add at least one operator first.</div>`;
+    return;
+  }
+
+  const jobsByOp = new Map(ops.map(o => [o.id, []]));
+  const unassigned = [];
+  for (const j of dayJobs){
+    if (j.operator_id && jobsByOp.has(j.operator_id)) jobsByOp.get(j.operator_id).push(j);
+    else unassigned.push(j);
+  }
+
+  const renderCol = (title, opId, jobs) => {
+    jobs.sort((a,b) => (a.stop_order||999) - (b.stop_order||999));
+    return `
+      <div class="dispatch-col">
+        <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+          <h3>${escapeHtml(title)}</h3>
+          <div style="opacity:.75; font-size:12px;">Stops: ${jobs.length}</div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+          ${opId ? `<button class="btn-secondary btn-small" type="button" onclick="optimizeOperator('${opId}')">Optimize</button>` : ''}
+        </div>
+        ${jobs.map(j => {
+          const t = jobTarget(j);
+          const tw = (t.tw_start || t.tw_end) ? `${fmtTime(t.tw_start)}-${fmtTime(t.tw_end)}` : '';
+          return `
+            <div class="stop-card">
+              <div style="display:flex; justify-content:space-between; gap:10px;">
+                <div style="font-weight:800;">#${escapeHtml(j.stop_order ?? 999)} — ${escapeHtml(t.label)}</div>
+                <div>${jobBadge(j.status)}</div>
+              </div>
+              <div class="stop-meta">${escapeHtml(t.address)}</div>
+              <div class="stop-meta">${tw ? `Window: <b>${escapeHtml(tw)}</b> • ` : ''}Svc: <b>${escapeHtml(String(t.service_minutes||15))}m</b></div>
+              <div class="stop-actions">
+                <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','en_route')">En route</button>
+                <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','in_progress')">Start</button>
+                <button class="btn-primary btn-small" type="button" onclick="setJobStatus('${j.id}','completed')">Complete</button>
+                <button class="btn-secondary btn-small" type="button" onclick="setJobStatus('${j.id}','skipped')">Skip</button>
+                <button class="btn-secondary btn-small" type="button" onclick="openPhotoUpload('${j.id}')">Photo</button>
+                ${opId ? `<button class="btn-secondary btn-small" type="button" onclick="openReassign('${j.id}')">Reassign</button>` : `<button class="btn-secondary btn-small" type="button" onclick="openReassign('${j.id}')">Assign</button>`}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  };
+
+  const cols = [];
+  cols.push(renderCol('Unassigned', null, unassigned));
+  for (const op of ops){ cols.push(renderCol(op.name, op.id, jobsByOp.get(op.id) || [])); }
+  board.innerHTML = cols.join('');
+}
+
+window.renderDispatchPanel = renderDispatchPanel;
+
+window.setJobStatus = async function(jobId, status){
+  try{
+    const now = new Date().toISOString();
+    const patch = { status };
+    if (status === 'in_progress' && !state.jobs.find(j => j.id === jobId)?.actual_start) patch.actual_start = now;
+    if (status === 'completed') patch.actual_end = now;
+    await updateJob(jobId, patch);
+    await addJobEvent(jobId, status, { status });
+    await syncFromSupabase();
+    renderDispatchPanel();
+    renderMapPanel();
+  } catch(e){
+    console.error(e);
+    showAlert(`Job update failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+window.openReassign = async function(jobId){
+  const job = state.jobs.find(j => j.id === jobId);
+  if (!job) return;
+  const ops = (state.reps||[]).filter(r => r.active !== false);
+  const opts = ops.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('');
+  const cur = job.operator_id || '';
+  const html = `
+    <div class="card" style="max-width:520px; margin: 0 auto;">
+      <div class="card-header"><h2>Assign / Reassign</h2></div>
+      <div class="form-group">
+        <label>Operator</label>
+        <select id="reassignOp" style="width:100%; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+          <option value="">Unassigned</option>
+          ${opts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Stop order</label>
+        <input id="reassignOrder" type="number" min="1" step="1" value="${Number(job.stop_order||999)}" />
+      </div>
+      <div class="form-row">
+        <button class="btn-primary" type="button" onclick="confirmReassign('${jobId}')">Save</button>
+        <button class="btn-secondary" type="button" onclick="renderDispatchPanel()">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('dispatchPanel').innerHTML = html;
+  const sel = document.getElementById('reassignOp');
+  if (sel) sel.value = cur;
+};
+
+window.confirmReassign = async function(jobId){
+  try{
+    const op = String(document.getElementById('reassignOp')?.value || '');
+    const ord = Number(document.getElementById('reassignOrder')?.value || 999);
+    await updateJob(jobId, { operator_id: op || null, stop_order: Number.isFinite(ord) ? ord : 999 });
+    await addJobEvent(jobId, 'reassigned', { operator_id: op || null, stop_order: ord });
+    await syncFromSupabase();
+    renderDispatchPanel();
+  } catch(e){
+    console.error(e);
+    showAlert(`Reassign failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+window.optimizeOperator = async function(operatorId){
+  try{
+    const d = String(document.getElementById('dispatchDate')?.value || new Date().toISOString().split('T')[0]);
+    const jobs = state.jobs.filter(j => String(j.job_date) === d && String(j.operator_id||'') === String(operatorId));
+    const stops = jobs.map(j => {
+      const t = jobTarget(j);
+      return { id: j.id, lat: Number(t.lat), lng: Number(t.lng) };
+    });
+    const ordered = nearestNeighborOrder(stops);
+    // Persist stop_order as 1..n in that order
+    for (let i=0; i<ordered.length; i++){
+      await updateJob(ordered[i], { stop_order: i+1 });
+    }
+    await syncFromSupabase();
+    renderDispatchPanel();
+    renderMapPanel();
+    showAlert('✅ Route optimized', 'success');
+  } catch(e){
+    console.error(e);
+    showAlert(`Optimize failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+window.optimizeAllOperators = async function(){
+  const ops = (state.reps||[]).filter(r => r.active !== false);
+  for (const op of ops){
+    // eslint-disable-next-line no-await-in-loop
+    await window.optimizeOperator(op.id);
+  }
+};
+
+window.generateDailyJobsFromRoutes = async function(){
+  try{
+    if (!supabaseClient) throw new Error('Supabase not configured.');
+    const d = String(document.getElementById('dispatchDate')?.value || new Date().toISOString().split('T')[0]);
+
+    // Prevent duplicates: fetch existing job targets for the day
+    const existing = new Set(state.jobs.filter(j => String(j.job_date) === d).map(j => j.customer_id || j.lead_id || j.id));
+
+    // Create jobs for customers that are on a route and are due in the cycle week.
+    const anchor = String(state.settings.cycle_anchor || '2026-04-01');
+    const wk = cycleWeekForDate(anchor, d);
+    const weekStart = nextWeekStartISO(anchor, d, wk);
+
+    const dueCustomers = (state.customers||[])
+      .filter(c => !!c.route_id)
+      .filter(c => {
+        const route = state.routes.find(r => r.id === c.route_id);
+        if (!route) return false;
+        const weeks = routeServiceWeeks(route);
+        return weeks.includes(wk);
+      });
+
+    const rows = [];
+    for (const c of dueCustomers){
+      if (existing.has(c.id)) continue;
+      const route = state.routes.find(r => r.id === c.route_id);
+      rows.push({
+        job_date: d,
+        operator_id: route?.operator_id || null,
+        customer_id: c.id,
+        status: 'scheduled',
+        stop_order: 999,
+        service_minutes: Number(c.service_minutes || 15),
+        tw_start: c.tw_start || null,
+        tw_end: c.tw_end || null,
+        address: c.address || null,
+        lat: c.lat ?? null,
+        lng: c.lng ?? null,
+        notes: null
+      });
+    }
+
+    if (!rows.length){
+      showAlert('No new jobs to generate for that date.', 'success');
+      return;
+    }
+
+    const { error } = await supabaseClient.from('jobs').insert(rows);
+    if (error) throw error;
+    await syncFromSupabase();
+    renderDispatchPanel();
+    renderMapPanel();
+    showAlert(`✅ Generated ${rows.length} jobs`, 'success');
+  } catch(e){
+    console.error(e);
+    showAlert(`Generate failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+// Photo uploads (proof)
+window.openPhotoUpload = async function(jobId){
+  const panel = document.getElementById('dispatchPanel');
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="card" style="max-width:560px; margin: 0 auto;">
+      <div class="card-header"><h2>Upload proof photo</h2></div>
+      <div class="form-group">
+        <label>Caption (optional)</label>
+        <input id="photoCaption" type="text" placeholder="e.g., After clean" />
+      </div>
+      <div class="form-group">
+        <label>Choose image</label>
+        <input id="photoFile" type="file" accept="image/*" />
+      </div>
+      <div class="form-row">
+        <button class="btn-primary" type="button" onclick="uploadJobPhoto('${jobId}')">Upload</button>
+        <button class="btn-secondary" type="button" onclick="renderDispatchPanel()">Back</button>
+      </div>
+      <div class="empty-state" id="photoMsg" style="margin-top:12px; display:none;"></div>
+    </div>
+  `;
+};
+
+window.uploadJobPhoto = async function(jobId){
+  try{
+    if (!supabaseClient) throw new Error('Supabase not configured.');
+    const file = document.getElementById('photoFile')?.files?.[0];
+    const caption = String(document.getElementById('photoCaption')?.value || '');
+    const msg = document.getElementById('photoMsg');
+    if (!file) throw new Error('Choose a file first.');
+
+    // Requires a storage bucket named 'job-photos'
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const path = `${jobId}/${Date.now()}_${Math.random().toString(16).slice(2)}.${ext}`;
+
+    const { error: upErr } = await supabaseClient.storage.from('job-photos').upload(path, file, { upsert: false });
+    if (upErr) throw upErr;
+
+    const { error: dbErr } = await supabaseClient.from('job_photos').insert({ job_id: jobId, path, caption: caption || null });
+    if (dbErr) throw dbErr;
+
+    await addJobEvent(jobId, 'photo_added', { path, caption });
+    if (msg){ msg.style.display='block'; msg.textContent = '✅ Uploaded'; }
+    await syncFromSupabase();
+    renderDispatchPanel();
+  } catch(e){
+    console.error(e);
+    showAlert(`Upload failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+// ==============================
+// Leads
+// ==============================
+
+async function geocodeAddress(address){
+  const q = String(address||'').trim();
+  if (!q) return null;
+  // Free geocoder (rate-limited). For production, replace with Google/Mapbox.
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  const j = await r.json();
+  const first = Array.isArray(j) ? j[0] : null;
+  if (!first) return null;
+  return { lat: Number(first.lat), lng: Number(first.lon) };
+}
+
+async function renderLeadsPanel(){
+  const panel = document.getElementById('leadsPanel');
+  if (!panel) return;
+
+  const status = String(document.getElementById('leadFilter')?.value || '');
+  const list = (state.leads||[]).filter(l => !status || String(l.status) === status);
+
+  panel.innerHTML = `
+    <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px;">
+      <div style="font-weight:800;">Leads</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <select id="leadFilter" onchange="renderLeadsPanel()" style="padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+          <option value="">All</option>
+          <option value="new">New</option>
+          <option value="presented">Presented</option>
+          <option value="comeback">Comeback</option>
+          <option value="not_interested">Not interested</option>
+          <option value="dnk">Do not knock</option>
+          <option value="sold">Sold</option>
+        </select>
+        <button class="btn-secondary btn-small" type="button" onclick="renderLeadsPanel()">Refresh</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding:14px; margin-bottom:12px;">
+      <div style="font-weight:800; margin-bottom:10px;">Add lead</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Business name</label>
+          <input id="leadBiz" type="text" placeholder="e.g., QuickMart" />
+        </div>
+        <div class="form-group">
+          <label>Address</label>
+          <input id="leadAddress" type="text" placeholder="123 Main St, City, ST" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Status</label>
+          <select id="leadStatus" style="width:100%; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+            <option value="new">New</option>
+            <option value="presented">Presented</option>
+            <option value="comeback">Comeback</option>
+            <option value="not_interested">Not interested</option>
+            <option value="dnk">Do not knock</option>
+            <option value="sold">Sold</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Follow up date</label>
+          <input id="leadFollow" type="date" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <input id="leadNotes" type="text" placeholder="Gate code, best time, decision maker name…" />
+      </div>
+      <div class="form-row">
+        <button class="btn-primary" type="button" onclick="createLead()">Save lead</button>
+      </div>
+    </div>
+
+    <div style="display:grid; gap:10px;">
+      ${list.map(l => {
+        const op = repById(l.assigned_operator_id);
+        return `
+          <div style="border:1px solid rgba(255,255,255,0.10); border-radius:14px; padding:12px; background: rgba(0,0,0,0.18);">
+            <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+              <div style="font-weight:800;">${escapeHtml(l.biz_name || 'Lead')}</div>
+              <div class="badge">${escapeHtml(l.status || 'new')}</div>
+            </div>
+            <div style="opacity:.85; font-size:12px; margin-top:6px;">${escapeHtml(l.address)}</div>
+            <div style="opacity:.75; font-size:12px; margin-top:6px;">Follow up: ${escapeHtml(l.follow_up_date || '—')} ${op ? `• Assigned: <b>${escapeHtml(op.name)}</b>` : ''}</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+              <button class="btn-secondary btn-small" type="button" onclick="quickLeadStatus('${l.id}','comeback')">Comeback</button>
+              <button class="btn-secondary btn-small" type="button" onclick="quickLeadStatus('${l.id}','dnk')">DNK</button>
+              <button class="btn-secondary btn-small" type="button" onclick="quickLeadStatus('${l.id}','sold')">Sold</button>
+              <button class="btn-secondary btn-small" type="button" onclick="scheduleLead('${l.id}')">Schedule</button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+      ${list.length ? '' : `<div class="empty-state">No leads match this filter.</div>`}
+    </div>
+  `;
+
+  const f = document.getElementById('leadFilter');
+  if (f) f.value = status;
+}
+
+window.renderLeadsPanel = renderLeadsPanel;
+
+window.createLead = async function(){
+  try{
+    if (!supabaseClient) throw new Error('Supabase not configured.');
+    const biz = String(document.getElementById('leadBiz')?.value || '').trim();
+    const address = String(document.getElementById('leadAddress')?.value || '').trim();
+    const status = String(document.getElementById('leadStatus')?.value || 'new');
+    const follow = String(document.getElementById('leadFollow')?.value || '');
+    const notes = String(document.getElementById('leadNotes')?.value || '').trim();
+    if (!address) throw new Error('Address is required.');
+
+    const geo = await geocodeAddress(address);
+    const payload = { biz_name: biz || null, address, status, follow_up_date: follow || null, notes: notes || null, lat: geo?.lat ?? null, lng: geo?.lng ?? null, updated_at: new Date().toISOString() };
+    const { error } = await supabaseClient.from('leads').insert(payload);
+    if (error) throw error;
+    await syncFromSupabase();
+    renderLeadsPanel();
+    renderMapPanel();
+    showAlert('✅ Lead saved', 'success');
+  } catch(e){
+    console.error(e);
+    showAlert(`Lead save failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+window.quickLeadStatus = async function(leadId, status){
+  try{
+    if (!supabaseClient) throw new Error('Supabase not configured.');
+    await supabaseClient.from('leads').update({ status, updated_at: new Date().toISOString() }).eq('id', leadId);
+    await syncFromSupabase();
+    renderLeadsPanel();
+    renderMapPanel();
+  } catch(e){
+    console.error(e);
+    showAlert(`Update failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+window.scheduleLead = async function(leadId){
+  const lead = state.leads.find(l => l.id === leadId);
+  if (!lead) return;
+  const ops = (state.reps||[]).filter(r => r.active !== false);
+  const opts = ops.map(o => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('');
+  document.getElementById('leadsPanel').innerHTML = `
+    <div class="card" style="max-width:560px; margin: 0 auto;">
+      <div class="card-header"><h2>Schedule lead visit</h2></div>
+      <div style="opacity:.85; margin-bottom:10px;"><b>${escapeHtml(lead.biz_name || 'Lead')}</b><div style="font-size:12px; opacity:.75; margin-top:6px;">${escapeHtml(lead.address)}</div></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Date</label>
+          <input id="leadJobDate" type="date" value="${lead.follow_up_date || new Date().toISOString().split('T')[0]}" />
+        </div>
+        <div class="form-group">
+          <label>Operator</label>
+          <select id="leadJobOp" style="width:100%; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+            <option value="">Unassigned</option>
+            ${opts}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <button class="btn-primary" type="button" onclick="confirmScheduleLead('${leadId}')">Create job</button>
+        <button class="btn-secondary" type="button" onclick="renderLeadsPanel()">Cancel</button>
+      </div>
+    </div>
+  `;
+  const sel = document.getElementById('leadJobOp');
+  if (sel) sel.value = lead.assigned_operator_id || '';
+};
+
+window.confirmScheduleLead = async function(leadId){
+  try{
+    if (!supabaseClient) throw new Error('Supabase not configured.');
+    const lead = state.leads.find(l => l.id === leadId);
+    if (!lead) throw new Error('Lead not found.');
+    const d = String(document.getElementById('leadJobDate')?.value || '');
+    const op = String(document.getElementById('leadJobOp')?.value || '');
+    if (!d) throw new Error('Pick a date.');
+
+    const { error } = await supabaseClient.from('jobs').insert({
+      job_date: d,
+      operator_id: op || null,
+      lead_id: leadId,
+      status: 'scheduled',
+      stop_order: 999,
+      service_minutes: 10,
+      tw_start: null,
+      tw_end: null,
+      address: lead.address,
+      lat: lead.lat ?? null,
+      lng: lead.lng ?? null
+    });
+    if (error) throw error;
+    await supabaseClient.from('leads').update({ status: 'presented', updated_at: new Date().toISOString(), assigned_operator_id: op || null, follow_up_date: d || null }).eq('id', leadId);
+    await syncFromSupabase();
+    switchTab('dispatch');
+    showAlert('✅ Lead scheduled', 'success');
+  } catch(e){
+    console.error(e);
+    showAlert(`Schedule failed: ${e?.message || 'error'}`, 'error');
+  }
+};
+
+// ==============================
+// Map
+// ==============================
+let __leaflet = { map: null, markers: [] };
+
+function clearMarkers(){
+  for (const m of (__leaflet.markers||[])){
+    try{ m.remove(); } catch(_){}
+  }
+  __leaflet.markers = [];
+}
+
+async function renderMapPanel(){
+  const panel = document.getElementById('mapPanel');
+  if (!panel) return;
+
+  const todayISO = new Date().toISOString().split('T')[0];
+  const date = String(document.getElementById('mapDate')?.value || (document.getElementById('dispatchDate')?.value) || todayISO);
+
+  panel.innerHTML = `
+    <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px;">
+      <div style="font-weight:800;">Map</div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="mapDate" type="date" value="${date}" style="padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.22); color:#fff;">
+        <button class="btn-secondary btn-small" type="button" onclick="renderMapPanel()">Refresh</button>
+      </div>
+    </div>
+    <div id="leafletMap"></div>
+    <div style="opacity:.75; font-size:12px; margin-top:10px; line-height:1.4;">
+      Pins: scheduled jobs (for selected date) + leads with coordinates.
+    </div>
+  `;
+
+  // Init map once
+  if (!__leaflet.map){
+    __leaflet.map = L.map('leafletMap', { zoomControl: true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(__leaflet.map);
+    __leaflet.map.setView([37.208957, -93.292299], 11); // Springfield, MO-ish default; adjust later
+  } else {
+    // Leaflet needs invalidateSize when container re-renders
+    setTimeout(() => { try{ __leaflet.map.invalidateSize(); } catch(_){} }, 50);
+  }
+
+  clearMarkers();
+
+  const jobs = (state.jobs||[]).filter(j => String(j.job_date) === date);
+  const leads = (state.leads||[]).filter(l => Number.isFinite(Number(l.lat)) && Number.isFinite(Number(l.lng)));
+
+  const points = [];
+
+  for (const j of jobs){
+    const t = jobTarget(j);
+    if (!Number.isFinite(Number(t.lat)) || !Number.isFinite(Number(t.lng))) continue;
+    points.push([Number(t.lat), Number(t.lng)]);
+    const op = repById(j.operator_id);
+    const popup = `
+      <div style="font-size:12px;">
+        <div style="font-weight:800;">${escapeHtml(t.label)}</div>
+        <div style="opacity:.85;">${escapeHtml(t.address)}</div>
+        <div style="opacity:.8; margin-top:6px;">${escapeHtml(String(j.status||'scheduled'))} ${op ? `• ${escapeHtml(op.name)}` : ''}</div>
+      </div>
+    `;
+    const m = L.marker([Number(t.lat), Number(t.lng)]).addTo(__leaflet.map).bindPopup(popup);
+    __leaflet.markers.push(m);
+  }
+
+  for (const l of leads){
+    points.push([Number(l.lat), Number(l.lng)]);
+    const popup = `
+      <div style="font-size:12px;">
+        <div style="font-weight:800;">${escapeHtml(l.biz_name || 'Lead')}</div>
+        <div style="opacity:.85;">${escapeHtml(l.address)}</div>
+        <div style="opacity:.8; margin-top:6px;">Lead: ${escapeHtml(l.status || 'new')}</div>
+      </div>
+    `;
+    const m = L.circleMarker([Number(l.lat), Number(l.lng)], { radius: 7, weight: 2 }).addTo(__leaflet.map).bindPopup(popup);
+    __leaflet.markers.push(m);
+  }
+
+  if (points.length){
+    try{ __leaflet.map.fitBounds(points, { padding: [30,30] }); } catch(_){}
+  }
+}
+
+window.renderMapPanel = renderMapPanel;
 
 // ==============================
 // KPIs (Orders-focused)
@@ -1822,6 +2577,9 @@ function renderEverything() {
   try { if (typeof window.renderInsights === 'function') window.renderInsights(); } catch (e) {}
 
   // If these panels exist, keep them up to date.
+  try { renderDispatchPanel(); } catch (e) {}
+  try { renderMapPanel(); } catch (e) {}
+  try { renderLeadsPanel(); } catch (e) {}
   try { renderOrdersPanel(); } catch (e) {}
   try { renderRoutesPanel(); } catch (e) {}
 }
@@ -1896,10 +2654,9 @@ async function boot() {
       // First render
       renderEverything();
     
-      // Default tab behavior: keep your existing default if you already do it.
-      // Otherwise, show "all" by default.
+      // Default tab
       if (typeof window.switchTab === 'function') {
-        try { window.switchTab('all'); } catch (e) {}
+        try { window.switchTab('dispatch'); } catch (e) {}
       }
   } catch (err) {
     console.error('BOOT ERROR:', err);

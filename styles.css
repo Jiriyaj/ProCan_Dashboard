@@ -361,6 +361,95 @@ button:active{ transform: translateY(0px); opacity: .95; }
   border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 13px;
 }
+
+/* =========================
+   Dispatch + Map additions
+   ========================= */
+
+.dispatch-grid{
+  display:grid;
+  grid-template-columns: 280px 1fr;
+  gap: 12px;
+}
+
+.dispatch-sidebar{
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(0,0,0,0.18);
+}
+
+.dispatch-board{
+  display:grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(260px, 320px);
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.dispatch-col{
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(0,0,0,0.18);
+  min-height: 420px;
+}
+
+.dispatch-col h3{
+  margin: 0 0 8px 0;
+  font-size: 14px;
+}
+
+.stop-card{
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(0,0,0,0.22);
+  margin-bottom: 10px;
+}
+
+.stop-meta{
+  font-size: 12px;
+  opacity: .82;
+  margin-top: 6px;
+  line-height: 1.35;
+}
+
+.stop-actions{
+  display:flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.18);
+  font-size: 11px;
+  opacity: .92;
+}
+
+.badge.good{ border-color: rgba(158,230,184,0.35); }
+.badge.warn{ border-color: rgba(255,211,105,0.35); }
+.badge.bad{ border-color: rgba(255,107,107,0.40); }
+
+#leafletMap{
+  width: 100%;
+  height: 520px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  overflow: hidden;
+}
+
+@media (max-width: 920px){
+  .dispatch-grid{ grid-template-columns: 1fr; }
+}
 .sales-table th{
   text-align:left;
   font-size: 11px;
