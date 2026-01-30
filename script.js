@@ -138,6 +138,7 @@ function wireUI(){
   });
 
   $('btnGoSchedule').addEventListener('click', () => switchView('scheduleView'));
+  $('btnGoSchedule2')?.addEventListener('click', () => switchView('scheduleView'));
 
   // week picker default
   $('weekPicker').value = toISODate(state.weekStart);
@@ -470,27 +471,30 @@ function renderHome(){
     totalProfit += amt - (amt * rate);
   }
 
-  // KPI: Gross card shows week gross; hover shows week profit
+  // KPI: Gross card shows week gross; hover shows profit + payouts
   $('kpiGross').textContent = fmtMoney(weekGross);
   $('kpiGrossSub').textContent = 'Hover to see profit';
-  attachKpiHover($('kpiGross')?.closest('.kpi'), `This week profit: ${fmtMoney(weekProfit)}`);
+  attachKpiHover($('kpiGross')?.closest('.kpi'), `Profit: ${fmtMoney(weekProfit)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
 
-  // KPI: Profit card shows total gross; hover shows total profit
-  $('kpiProfit').textContent = fmtMoney(totalGross);
-  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Total profit: ${fmtMoney(totalProfit)}`);
+  // KPI: Profit card shows week profit; hover shows how it's computed
+  $('kpiProfit').textContent = fmtMoney(weekProfit);
+  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Gross: ${fmtMoney(weekGross)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
 
-  // KPI: Jobs card shows total clients (unique orders); hover shows total jobs this week
-  $('kpiJobs').textContent = String(weekOrderSet.size);
-  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Total jobs this week: ${weekAsn.length}`);
+  // KPI: Jobs card shows scheduled stops (count); hover shows unique clients
+  $('kpiJobs').textContent = String(weekAsn.length);
+  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Unique clients: ${weekOrderSet.size}`);
 
   // Payouts KPI remains weekly payouts
   $('kpiPayouts').textContent = fmtMoney(weekPayouts);
+
+  // Soonest available (simple capacity-based heuristic)
+  renderNextAvailable();
 
   // Week routes list (grouped)
   const weekRoutesList = $('weekRoutesList');
   weekRoutesList.innerHTML = '';
   if (!weekAsn.length){
-    weekRoutesList.innerHTML = `<div class="muted">No jobs scheduled for this week yet. Click “Auto-assign week”.</div>`;
+    weekRoutesList.innerHTML = `<div class="muted">No jobs scheduled for this week yet. Click “Generate schedule”.</div>`;
   } else {
     const sorted = [...weekAsn].sort((a,b)=>{
       if (a.service_date !== b.service_date) return a.service_date.localeCompare(b.service_date);
@@ -550,6 +554,7 @@ function renderHome(){
 
   // Payout breakdown list
   const payoutList = $('payoutList');
+  if (!payoutList) return;
   payoutList.innerHTML = '';
   const entries = state.operators
     .filter(o => o.active !== false)
@@ -567,6 +572,49 @@ function renderHome(){
       }));
     }
   }
+}
+
+function renderNextAvailable(){
+  const el = $('nextAvailable');
+  const sub = $('nextAvailableSub');
+  if (!el) return;
+
+  // Heuristic: total stops per day capacity. Adjust as you learn your market.
+  const DAILY_STOP_CAPACITY = 10;
+  const LOOKAHEAD_DAYS = 30;
+
+  const today = new Date();
+  today.setHours(0,0,0,0);
+
+  // Count scheduled stops per day across loaded assignments
+  const counts = {};
+  for (const a of state.assignments){
+    const d = String(a.service_date||'');
+    if (!d) continue;
+    counts[d] = (counts[d]||0) + 1;
+  }
+
+  let chosen = null;
+  for (let i=0;i<=LOOKAHEAD_DAYS;i++){
+    const d = addDays(today, i);
+    const dow = d.getDay();
+    if (dow === 0 || dow === 6) continue; // skip weekend
+    const iso = toISODate(d);
+    const used = counts[iso] || 0;
+    if (used < DAILY_STOP_CAPACITY){
+      chosen = { iso, used };
+      break;
+    }
+  }
+
+  if (!chosen){
+    el.textContent = 'No openings';
+    if (sub) sub.textContent = `Fully booked for the next ${LOOKAHEAD_DAYS} days (capacity ${DAILY_STOP_CAPACITY}/day)`;
+    return;
+  }
+
+  el.textContent = chosen.iso;
+  if (sub) sub.textContent = `Booked: ${chosen.used}/${DAILY_STOP_CAPACITY} stops (next ${LOOKAHEAD_DAYS} days)`;
 }
 
 function attachKpiHover(cardEl, text){
@@ -657,7 +705,7 @@ function renderSchedule(){
   if (!rows.length){
     const empty = document.createElement('div');
     empty.className = 'schedule-row';
-    empty.innerHTML = `<div class="muted" style="grid-column:1/-1;">No scheduled jobs in this range. Click “Auto-assign week”.</div>`;
+    empty.innerHTML = `<div class="muted" style="grid-column:1/-1;">No scheduled jobs in this range. Click “Generate schedule”.</div>`;
     table.appendChild(empty);
   } else {
     for (const a of rows){

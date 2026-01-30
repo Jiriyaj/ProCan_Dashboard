@@ -78,7 +78,7 @@
             <input type="date" id="weekPicker" />
           </div>
           <button class="btn ghost" id="btnRefresh">Refresh</button>
-          <button class="btn primary" id="btnAutoAssign">Auto-assign week</button>
+          <button class="btn primary" id="btnAutoAssign">Generate schedule</button>
         </div>
       </header>
 
@@ -124,29 +124,34 @@
           <div class="card">
             <div class="card-head">
               <div>
-                <div class="card-title">Payout breakdown</div>
-                <div class="card-sub">Projected payouts by operator (this week)</div>
-              </div>
-            </div>
-            <div class="list" id="payoutList"></div>
-          </div>
-        </div>
-          <div class="card">
-            <div class="card-head">
-              <div>
                 <div class="card-title">Unassigned orders</div>
                 <div class="card-sub">Paid orders not yet scheduled</div>
               </div>
               <button class="btn ghost" id="btnGoOrders">Open orders</button>
             </div>
             <div class="list" id="unassignedList"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Soonest available</div>
+                <div class="card-sub">Quick availability check for mid-sale</div>
+              </div>
+              <button class="btn ghost" id="btnGoSchedule2">Open schedule</button>
+            </div>
             <div class="divider"></div>
             <div class="workload">
+              <div class="workload-title">Next open service day</div>
+              <div class="kpi-value" id="nextAvailable">—</div>
+              <div class="kpi-sub" id="nextAvailableSub">Based on current scheduled workload</div>
+              <div class="divider"></div>
               <div class="workload-title">Weekly workload</div>
               <div class="workload-bar"><div class="workload-fill" id="workloadFill"></div></div>
               <div class="workload-sub" id="workloadSub">—</div>
             </div>
           </div>
+        </div>
 
       </section>
 
@@ -186,9 +191,9 @@
             <div id="map"></div>
             <div class="map-empty" id="mapEmpty" style="display:none;">
               <div class="map-empty-title">No mappable stops yet</div>
-              <div class="map-empty-sub">Add assignments (Auto-assign week), then geocode addresses.</div>
+              <div class="map-empty-sub">Generate a schedule, then geocode addresses to view stops on the map.</div>
               <div class="map-empty-actions">
-                <button class="btn primary" id="btnAutoAssign2">Auto-assign week</button>
+                <button class="btn primary" id="btnAutoAssign2">Generate schedule</button>
                 <button class="btn ghost" id="btnGeocode2">Geocode missing</button>
               </div>
             </div>
@@ -207,7 +212,7 @@
             <div class="filters">
               <select id="ordersStatus"></select>
               <input id="ordersSearch" type="search" placeholder="Search business / address…" />
-              <button class="btn ghost" id="btnBulkAutoAssign">Auto-assign week</button>
+              <button class="btn ghost" id="btnBulkAutoAssign">Generate schedule</button>
             </div>
           </div>
           <div class="table" id="ordersTable"></div>

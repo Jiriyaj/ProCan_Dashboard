@@ -80,7 +80,7 @@ input, select{
   padding:12px 12px;
   outline:none;
 }
-input:focus, select:focus{border-color:rgba(158,240,26,.45); box-shadow:0 0 0 4px rgba(158,240,26,.10)}
+input:focus, select:focus{border-color:rgba(40,199,255,.55); box-shadow:0 0 0 4px rgba(40,199,255,.12)}
 .auth-actions{display:flex; gap:10px; margin-top:10px}
 .auth-msg{margin-top:10px; color:var(--warn); min-height:18px}
 .auth-foot{margin-top:12px; font-size:12px; color:var(--muted2)}
@@ -97,9 +97,9 @@ input:focus, select:focus{border-color:rgba(158,240,26,.45); box-shadow:0 0 0 4p
 }
 .btn:hover{border-color:var(--stroke2)}
 .btn.primary{
-  background:linear-gradient(180deg, rgba(158,240,26,.95), rgba(158,240,26,.78));
-  color:#071006;
-  border-color:rgba(158,240,26,.55);
+  background:linear-gradient(135deg, rgba(40,199,255,.95), rgba(255,176,32,.82));
+  color:#041017;
+  border-color:rgba(40,199,255,.45);
 }
 .btn.primary:hover{filter:brightness(1.03)}
 .btn.ghost{background:rgba(255,255,255,.03)}
@@ -136,8 +136,8 @@ input:focus, select:focus{border-color:rgba(158,240,26,.45); box-shadow:0 0 0 4p
 }
 .nav-item:hover{background:rgba(255,255,255,.04); border-color:var(--stroke)}
 .nav-item.active{
-  background:rgba(158,240,26,.14);
-  border-color:rgba(158,240,26,.30);
+  background:rgba(40,199,255,.12);
+  border-color:rgba(40,199,255,.26);
 }
 .sidebar-foot{
   margin-top:auto;
@@ -248,10 +248,10 @@ input:focus, select:focus{border-color:rgba(158,240,26,.45); box-shadow:0 0 0 4p
   color:var(--muted);
   background:rgba(255,255,255,.03);
 }
-.badge.brand{border-color:rgba(158,240,26,.38); color:rgba(210,255,150,.95); background:rgba(158,240,26,.10)}
+.badge.brand{border-color:rgba(255,176,32,.42); color:rgba(255,236,200,.95); background:rgba(255,176,32,.10)}
 .badge.blue{border-color:rgba(40,199,255,.35); color:rgba(170,235,255,.95); background:rgba(40,199,255,.10)}
 .badge.warn{border-color:rgba(255,176,32,.40); color:rgba(255,230,180,.95); background:rgba(255,176,32,.10)}
-.badge.ok{border-color:rgba(64,255,153,.35); color:rgba(190,255,225,.95); background:rgba(64,255,153,.10)}
+.badge.ok{border-color:rgba(40,199,255,.35); color:rgba(170,235,255,.95); background:rgba(40,199,255,.10)}
 
 .schedule{display:block;}
 
