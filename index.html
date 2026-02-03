@@ -109,27 +109,22 @@
           </div>
         </div>
 
-        <div class="grid three">
+        <div class="grid two">
           <div class="card">
             <div class="card-head">
               <div>
-                <div class="card-title">This week’s routes</div>
-                <div class="card-sub">All scheduled stops for this week</div>
+                <div class="card-title">Intake orders</div>
+                <div class="card-sub">All orders from the Intake form (grouped by cadence • area • age to help build routes)</div>
               </div>
-              <button class="btn ghost" id="btnGoSchedule">Open schedule</button>
-            </div>
-            <div class="list" id="weekRoutesList"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <div>
-                <div class="card-title">Unassigned orders</div>
-                <div class="card-sub">Paid orders not yet scheduled</div>
+              <div class="filters">
+                <select id="homeCadence"></select>
+                <select id="homeAge"></select>
+                <input id="homeSearch" type="search" placeholder="Search business / address…" />
+                <button class="btn ghost" id="btnGoOrdersHome">Open full orders</button>
               </div>
-              <button class="btn ghost" id="btnGoOrders">Open orders</button>
             </div>
-            <div class="list" id="unassignedList"></div>
+            <div class="chips" id="homeGroupChips"></div>
+            <div class="table" id="homeOrdersTable"></div>
           </div>
 
           <div class="card">
@@ -155,7 +150,7 @@
 
       </section>
 
-      <!-- SCHEDULE -->
+<!-- SCHEDULE -->
       <section class="view" id="scheduleView" style="display:none;">
         <div class="card">
           <div class="card-head">
@@ -178,22 +173,22 @@
         <div class="card">
           <div class="card-head">
             <div>
-              <div class="card-title">Route map</div>
-              <div class="card-sub">Color-coded by operator. Displays scheduled stops.</div>
+              <div class="card-title">Orders map</div>
+              <div class="card-sub">All intake orders shown as location markers.</div>
             </div>
             <div class="filters">
-              <select id="mapOperator"></select>
-              <select id="mapRange"></select>
+              <select id="mapCadence"></select>
+              <select id="mapStatus"></select>
               <button class="btn ghost" id="btnGeocodeMissing">Geocode missing</button>
             </div>
           </div>
           <div class="map-wrap">
             <div id="map"></div>
             <div class="map-empty" id="mapEmpty" style="display:none;">
-              <div class="map-empty-title">No mappable stops yet</div>
-              <div class="map-empty-sub">Generate a schedule, then geocode addresses to view stops on the map.</div>
+              <div class="map-empty-title">No mappable orders yet</div>
+              <div class="map-empty-sub">Geocode missing addresses to view all intake orders on the map.</div>
               <div class="map-empty-actions">
-                <button class="btn primary" id="btnAutoAssign2">Generate schedule</button>
+                <button class="btn primary" id="btnGoOrdersMap">Open orders</button>
                 <button class="btn ghost" id="btnGeocode2">Geocode missing</button>
               </div>
             </div>

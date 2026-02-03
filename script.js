@@ -128,10 +128,11 @@ function wireUI(){
   $('btnRefresh').addEventListener('click', async () => { await refreshAll(true); });
   $('btnAutoAssign').addEventListener('click', async () => { await autoAssignCurrentWeek(); });
 
-  $('btnAutoAssign2').addEventListener('click', async () => { await autoAssignCurrentWeek(); switchView('scheduleView'); });
-  $('btnGeocode2').addEventListener('click', async () => { await geocodeMissingOrders(15); await renderMap(); });
+  $('btnAutoAssign2')?.addEventListener('click', async () => { await autoAssignCurrentWeek(); switchView('scheduleView'); });
+  $('btnGeocode2')?.addEventListener('click', async () => { await geocodeMissingOrders(15); await renderMap(); });
+  $('btnGoOrdersMap')?.addEventListener('click', () => switchView('ordersView'));
 
-  $('btnGeocodeMissing').addEventListener('click', async () => {
+  $('btnGeocodeMissing')?.addEventListener('click', async () => {
     await geocodeMissingOrders(15);
     await refreshAll(false);
     await renderMap();
@@ -152,10 +153,14 @@ function wireUI(){
   // schedule filters
   $('filterOperator').addEventListener('change', () => renderSchedule());
   $('filterRange').addEventListener('change', () => renderSchedule());
-  $('mapOperator').addEventListener('change', () => renderMap());
-  $('mapRange').addEventListener('change', () => renderMap());
+  $('mapCadence')?.addEventListener('change', () => renderMap());
+  $('mapStatus')?.addEventListener('change', () => renderMap());
   $('ordersStatus').addEventListener('change', () => renderOrders());
   $('ordersSearch').addEventListener('input', () => renderOrders());
+  $('homeCadence')?.addEventListener('change', () => renderHome());
+  $('homeAge')?.addEventListener('change', () => renderHome());
+  $('homeSearch')?.addEventListener('input', () => renderHome());
+  $('btnGoOrdersHome')?.addEventListener('click', () => switchView('ordersView'));
   $('btnPrintSchedule')?.addEventListener('click', () => printSchedulePDF());
   $('btnGoOrders')?.addEventListener('click', () => switchView('ordersView'));
   $('btnBulkAutoAssign')?.addEventListener('click', async () => { await autoAssignCurrentWeek(); await refreshAll(false); });
@@ -208,7 +213,7 @@ function switchView(viewId){
   const titles = {
     homeView: ['Home', 'At-a-glance ops overview'],
     scheduleView: ['Schedule', 'Weekly dispatch built from Intake orders'],
-    mapView: ['Map', 'Route map (color-coded by operator)'],
+    mapView: ['Map', 'All intake orders on the map (hover for details)'],
     ordersView: ['Orders', 'Intake orders + status'],
     operatorsView: ['Operators', 'Manage payouts & capacity'],
   };
@@ -293,7 +298,6 @@ function hydrateFilters(){
   };
 
   opSel($('filterOperator'), true);
-  opSel($('mapOperator'), true);
 
   const rangeSel = (el) => {
     if (!el) return;
@@ -302,13 +306,34 @@ function hydrateFilters(){
     el.append(new Option('Today', 'today'));
     el.append(new Option('This week', 'week'));
     el.append(new Option('This month', 'month'));
-    // keep selection if possible
     if (['today','week','month'].includes(current)) el.value = current;
     else el.value = 'week';
   };
   rangeSel($('filterRange'));
-  rangeSel($('mapRange'));
 
+  const statusSel = (el) => {
+    if (!el) return;
+    const current = el.value || 'all';
+    el.innerHTML='';
+    ['all','new','paid','scheduled','completed','cancelled'].forEach(s=>{
+      el.append(new Option(s==='all'?'All statuses':s, s));
+    });
+    el.value = current;
+  };
+
+  const cadenceSel = (el) => {
+    if (!el) return;
+    const current = el.value || 'all';
+    el.innerHTML='';
+    el.append(new Option('All cadences','all'));
+    el.append(new Option('biweekly','biweekly'));
+    el.append(new Option('monthly','monthly'));
+    el.append(new Option('weekly','weekly'));
+    el.append(new Option('one-time','one-time'));
+    el.value = current;
+  };
+
+  // Orders page status
   const status = $('ordersStatus');
   if (status){
     status.innerHTML='';
@@ -317,6 +342,24 @@ function hydrateFilters(){
       status.append(new Option(s==='All'?'All statuses':s, val));
     });
   }
+
+  // Home filters
+  cadenceSel($('homeCadence'));
+  const age = $('homeAge');
+  if (age){
+    const current = age.value || 'all';
+    age.innerHTML='';
+    age.append(new Option('All ages','all'));
+    age.append(new Option('0–7 days','0-7'));
+    age.append(new Option('8–14 days','8-14'));
+    age.append(new Option('15–30 days','15-30'));
+    age.append(new Option('31+ days','31+'));
+    age.value = current;
+  }
+
+  // Map filters
+  cadenceSel($('mapCadence'));
+  statusSel($('mapStatus'));
 }
 
 /* ========= Auto-assign =========
@@ -438,110 +481,43 @@ function renderHome(){
 
   const weekAsn = state.assignments.filter(a => a.service_date >= weekStartISO && a.service_date <= weekEndISO);
 
-  // KPI calculations
+  // KPI calculations (based on scheduled work)
   let weekGross = 0;
-  const payoutsByOp = {};
+  let weekPayouts = 0;
   const weekOrderSet = new Set();
 
   for (const a of weekAsn){
     weekOrderSet.add(a.order_id);
     const ord = orderById.get(a.order_id);
     if (!ord) continue;
+
     const amt = Number(ord.monthly_total || ord.due_today || 0);
     weekGross += amt;
 
     const op = opsById.get(a.operator_id);
     const rate = Number(op?.payout_rate ?? 30) / 100;
-    const pay = amt * rate;
-    if (a.operator_id) payoutsByOp[a.operator_id] = (payoutsByOp[a.operator_id]||0) + pay;
-  }
-  const weekPayouts = Object.values(payoutsByOp).reduce((s,v)=>s+v,0);
-  const weekProfit = weekGross - weekPayouts;
-
-  // Totals (company-wide, based on loaded orders)
-  let totalGross = 0;
-  let totalProfit = 0;
-  for (const ord of state.orders){
-    const amt = Number(ord.monthly_total || ord.due_today || 0);
-    totalGross += amt;
-    // estimate profit using assigned operator rate if assigned this week, else 30%
-    const anyAsn = state.assignments.find(a => a.order_id === ord.id);
-    const op = anyAsn ? opsById.get(anyAsn.operator_id) : null;
-    const rate = Number(op?.payout_rate ?? 30) / 100;
-    totalProfit += amt - (amt * rate);
+    weekPayouts += amt * rate;
   }
 
-  // KPI: Gross card shows week gross; hover shows profit + payouts
+  const weekProfit = Math.max(0, weekGross - weekPayouts);
+
   $('kpiGross').textContent = fmtMoney(weekGross);
-  $('kpiGrossSub').textContent = 'Hover to see profit';
-  attachKpiHover($('kpiGross')?.closest('.kpi'), `Profit: ${fmtMoney(weekProfit)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
-
-  // KPI: Profit card shows week profit; hover shows how it's computed
   $('kpiProfit').textContent = fmtMoney(weekProfit);
-  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Gross: ${fmtMoney(weekGross)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
-
-  // KPI: Jobs card shows scheduled stops (count); hover shows unique clients
   $('kpiJobs').textContent = String(weekAsn.length);
-  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Unique clients: ${weekOrderSet.size}`);
-
-  // Payouts KPI remains weekly payouts
   $('kpiPayouts').textContent = fmtMoney(weekPayouts);
+
+  // KPI hovers (fix: consistent hover behavior)
+  attachKpiHover($('kpiGross')?.closest('.kpi'), `Profit: ${fmtMoney(weekProfit)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
+  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Gross: ${fmtMoney(weekGross)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
+  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Unique clients: ${weekOrderSet.size}`);
 
   // Soonest available (simple capacity-based heuristic)
   renderNextAvailable();
 
-  // Week routes list (grouped)
-  const weekRoutesList = $('weekRoutesList');
-  weekRoutesList.innerHTML = '';
-  if (!weekAsn.length){
-    weekRoutesList.innerHTML = `<div class="muted">No jobs scheduled for this week yet. Click “Generate schedule”.</div>`;
-  } else {
-    const sorted = [...weekAsn].sort((a,b)=>{
-      if (a.service_date !== b.service_date) return a.service_date.localeCompare(b.service_date);
-      const ao = Number(a.stop_order||0), bo = Number(b.stop_order||0);
-      return ao - bo;
-    });
+  // Home orders inbox (grouped)
+  renderHomeOrdersInbox();
 
-    for (const a of sorted){
-      const ord = orderById.get(a.order_id);
-      const op = opsById.get(a.operator_id);
-      const title = ord?.biz_name || ord?.business_name || ord?.contact_name || 'Order';
-      const sub = `${a.service_date} • ${op?.name || 'Unassigned'} • ${ord?.address || ''}`;
-      weekRoutesList.append(renderRow({
-        title,
-        sub,
-        badges: [
-          { text: (ord?.cadence || 'monthly'), cls:'' },
-          { text: fmtMoney(ord?.monthly_total || ord?.due_today || 0), cls:'brand' },
-        ]
-      }));
-    }
-  }
-
-  // Unassigned orders (paid/new, not scheduled this week)
-  const assignedThisWeek = new Set(weekAsn.map(a => a.order_id));
-  const unassigned = state.orders
-    .filter(o => (o.status || 'new') !== 'cancelled')
-    .filter(o => !assignedThisWeek.has(o.id))
-    .slice(0, 20);
-
-  const unassignedList = $('unassignedList');
-  if (unassignedList){
-    unassignedList.innerHTML = '';
-    if (!unassigned.length){
-      unassignedList.innerHTML = `<div class="muted">No unassigned orders for this week.</div>`;
-    } else {
-      for (const ord of unassigned){
-        unassignedList.append(renderRow({
-          title: ord.biz_name || ord.business_name || ord.contact_name || 'Order',
-          sub: ord.address || '',
-          badges: [{ text: (ord.status || 'new'), cls:'' }, { text: fmtMoney(ord.monthly_total || ord.due_today || 0), cls:'brand' }]
-        }));
-      }
-    }
-  }
-
-  // Workload visual
+  // Workload visual (scheduled vs total orders)
   const fill = $('workloadFill');
   const sub = $('workloadSub');
   if (fill && sub){
@@ -549,31 +525,168 @@ function renderHome(){
     const assigned = weekAsn.length;
     const pct = total ? Math.min(100, Math.round((assigned / total) * 100)) : 0;
     fill.style.width = pct + '%';
-    sub.textContent = `${assigned} scheduled this week • ${unassigned.length} unassigned shown`;
-  }
-
-  // Payout breakdown list
-  const payoutList = $('payoutList');
-  if (!payoutList) return;
-  payoutList.innerHTML = '';
-  const entries = state.operators
-    .filter(o => o.active !== false)
-    .map(o => ({ o, amt: payoutsByOp[o.id] || 0 }))
-    .sort((a,b)=>b.amt-a.amt);
-
-  if (!entries.length){
-    payoutList.innerHTML = `<div class="muted">No operators yet.</div>`;
-  } else {
-    for (const e of entries){
-      payoutList.append(renderRow({
-        title: e.o.name,
-        sub: `Payout rate: ${Number(e.o.payout_rate||30).toFixed(1)}%`,
-        badges: [{ text: fmtMoney(e.amt), cls:'brand' }]
-      }));
-    }
+    sub.textContent = `${assigned} scheduled this week • ${total} total intake orders`;
   }
 }
 
+function normalizeCadence(c){
+  const s = String(c||'').toLowerCase();
+  if (!s) return '';
+  if (s.includes('bi')) return 'biweekly';
+  if (s.includes('month')) return 'monthly';
+  if (s.includes('week')) return 'weekly';
+  if (s.includes('one')) return 'one-time';
+  return s;
+}
+
+function ageDaysFrom(order){
+  const d = parseISO(order.created_at || order.created || order.order_created_at);
+  if (!d) return null;
+  const now = new Date(); now.setHours(0,0,0,0);
+  const dd = new Date(d); dd.setHours(0,0,0,0);
+  return Math.max(0, Math.round((now - dd) / 86400000));
+}
+
+function ageBucket(days){
+  if (days === null) return 'unknown';
+  if (days <= 7) return '0–7d';
+  if (days <= 14) return '8–14d';
+  if (days <= 30) return '15–30d';
+  return '31+d';
+}
+
+function renderHomeOrdersInbox(){
+  const wrap = $('homeOrdersTable');
+  if (!wrap) return;
+
+  const q = String($('homeSearch')?.value || '').toLowerCase();
+  const cadFilter = $('homeCadence')?.value || 'all';
+  const ageFilter = $('homeAge')?.value || 'all';
+
+  let rows = state.orders.slice();
+
+  // Filters
+  if (q){
+    rows = rows.filter(o =>
+      String(o.biz_name||o.business_name||'').toLowerCase().includes(q) ||
+      String(o.address||'').toLowerCase().includes(q) ||
+      String(o.id||'').toLowerCase().includes(q)
+    );
+  }
+  if (cadFilter !== 'all'){
+    rows = rows.filter(o => normalizeCadence(o.cadence) === cadFilter);
+  }
+  if (ageFilter !== 'all'){
+    rows = rows.filter(o => {
+      const d = ageDaysFrom(o);
+      if (d === null) return false;
+      if (ageFilter === '0-7') return d <= 7;
+      if (ageFilter === '8-14') return d >= 8 && d <= 14;
+      if (ageFilter === '15-30') return d >= 15 && d <= 30;
+      if (ageFilter === '31+') return d >= 31;
+      return true;
+    });
+  }
+
+  // Compute group key: cadence + zip + age bucket
+  const cadenceOrder = { 'biweekly': 0, 'monthly': 1, 'weekly': 2, 'one-time': 3, '': 9 };
+  rows = rows.map(o => {
+    const cad = normalizeCadence(o.cadence);
+    const zip = zipFromAddress(o.address || '');
+    const days = ageDaysFrom(o);
+    const bucket = ageBucket(days);
+    return { o, cad, zip, days, bucket, key: `${cad||'—'}|${zip||'—'}|${bucket}` };
+  });
+
+  rows.sort((a,b)=>{
+    const ca = cadenceOrder[a.cad] ?? 9;
+    const cb = cadenceOrder[b.cad] ?? 9;
+    if (ca !== cb) return ca - cb;
+    if (a.zip !== b.zip) return String(a.zip).localeCompare(String(b.zip));
+    // oldest first so you can clear stale orders
+    const ad = (a.days===null ? -1 : a.days);
+    const bd = (b.days===null ? -1 : b.days);
+    if (ad !== bd) return bd - ad;
+    return String(b.o.created_at||'').localeCompare(String(a.o.created_at||''));
+  });
+
+  // Chips summary (quick clustering hints)
+  const chips = $('homeGroupChips');
+  if (chips){
+    const byCad = {};
+    const byAge = {};
+    const byZip = {};
+    for (const r of rows){
+      byCad[r.cad || 'unknown'] = (byCad[r.cad || 'unknown']||0)+1;
+      byAge[r.bucket] = (byAge[r.bucket]||0)+1;
+      if (r.zip) byZip[r.zip] = (byZip[r.zip]||0)+1;
+    }
+    const topZips = Object.entries(byZip).sort((a,b)=>b[1]-a[1]).slice(0,3);
+    chips.innerHTML = '';
+    const chip = (label, val) => {
+      const d = document.createElement('div');
+      d.className = 'chip';
+      d.innerHTML = `<b>${escapeHtml(label)}</b>${escapeHtml(String(val))}`;
+      chips.append(d);
+    };
+    chip('Total', rows.length);
+    if (byCad.biweekly) chip('Biweekly', byCad.biweekly);
+    if (byCad.monthly) chip('Monthly', byCad.monthly);
+    if (byCad.weekly) chip('Weekly', byCad.weekly);
+    if (byCad['one-time']) chip('One-time', byCad['one-time']);
+    if (byAge['31+d']) chip('31+d', byAge['31+d']);
+    if (topZips.length){
+      chip('Top ZIPs', topZips.map(([z,c])=>`${z}(${c})`).join(' • '));
+    }
+  }
+
+  const html = [];
+  html.push(`<table><thead><tr>
+    <th>Business</th>
+    <th>Address</th>
+    <th>Cadence</th>
+    <th>ZIP</th>
+    <th>Age</th>
+    <th>Preferred day</th>
+    <th>Monthly</th>
+    <th>Status</th>
+  </tr></thead><tbody>`);
+
+  let lastKey = null;
+  for (const r of rows.slice(0, 600)){
+    const o = r.o;
+    if (r.key !== lastKey){
+      const label = `${r.cad||'—'} • ${r.zip||'—'} • ${r.bucket}`;
+      html.push(`<tr class="group-row"><td colspan="8">${escapeHtml(label)}</td></tr>`);
+      lastKey = r.key;
+    }
+    html.push(`<tr class="clickable" data-order-id="${escapeHtml(o.id)}">
+      <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
+      <td>${escapeHtml(o.address||'')}</td>
+      <td>${escapeHtml(r.cad||o.cadence||'')}</td>
+      <td>${escapeHtml(r.zip||'')}</td>
+      <td>${r.days===null?'—':escapeHtml(String(r.days)+'d')}</td>
+      <td>${escapeHtml(o.preferred_service_day||'')}</td>
+      <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
+      <td>${escapeHtml(o.status||'new')}</td>
+    </tr>`);
+  }
+
+  html.push(`</tbody></table>`);
+  wrap.innerHTML = html.join('');
+
+  // Row click: jump to Orders tab and focus this order
+  wrap.querySelectorAll('tr.clickable').forEach(tr=>{
+    tr.addEventListener('click', ()=>{
+      const id = tr.dataset.orderId;
+      switchView('ordersView');
+      if ($('ordersSearch')){
+        $('ordersSearch').value = id || '';
+        renderOrders();
+      }
+    });
+  });
+}
 function renderNextAvailable(){
   const el = $('nextAvailable');
   const sub = $('nextAvailableSub');
@@ -1090,33 +1203,62 @@ async function renderMap(){
 
   clearMapLayers();
 
-  const orderById = new Map(state.orders.map(o => [o.id, o]));
-  const opsById = new Map(state.operators.map(o => [o.id, o]));
+  const cad = $('mapCadence')?.value || 'all';
+  const st = $('mapStatus')?.value || 'all';
 
-  const opFilter = $('mapOperator')?.value || 'all';
-  const range = $('mapRange')?.value || 'week';
-  const { startISO, endISO } = getRangeWindow(range);
+  // Filter orders
+  let rows = state.orders.slice();
+  if (cad !== 'all') rows = rows.filter(o => normalizeCadence(o.cadence) === cad);
+  if (st !== 'all') rows = rows.filter(o => String(o.status||'new') === st);
 
-  const rows = state.assignments
-    .filter(a => a.service_date >= startISO && a.service_date <= endISO)
-    .filter(a => opFilter === 'all' ? true : (a.operator_id === opFilter))
-    .sort((a,b)=> a.service_date.localeCompare(b.service_date) || (Number(a.stop_order||0)-Number(b.stop_order||0)));
+  // Marker colors by cadence (simple + readable)
+  const colorFor = (o) => {
+    const c = normalizeCadence(o.cadence);
+    if (c === 'biweekly') return getCssVar('--brand') || '#28c7ff';
+    if (c === 'monthly') return getCssVar('--brand2') || '#ffb020';
+    if (c === 'weekly') return '#a78bfa';
+    if (c === 'one-time') return '#9ca3af';
+    return '#9099a8';
+  };
 
   const points = [];
-  const byOpDay = new Map(); // key opId|date -> [{lat,lng,label}]
-
-  for (const a of rows){
-    const ord = orderById.get(a.order_id);
-    if (!ord) continue;
+  for (const ord of rows){
     const lat = Number(ord.lat);
     const lng = Number(ord.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
 
-    const opId = a.operator_id || 'unassigned';
-    const key = `${opId}|${a.service_date}`;
-    if (!byOpDay.has(key)) byOpDay.set(key, []);
-    byOpDay.get(key).push({ lat, lng, a, ord });
+    const title = ord.biz_name || ord.business_name || ord.contact_name || 'Order';
+    const days = ageDaysFrom(ord);
+    const bucket = ageBucket(days);
+    const zip = zipFromAddress(ord.address||'');
+    const popup = `
+      <div style="min-width:240px">
+        <div style="font-weight:800; margin-bottom:4px;">${escapeHtml(title)}</div>
+        <div style="color:rgba(255,255,255,0.72); font-size:12px; margin-bottom:8px;">${escapeHtml(ord.address||'')}</div>
+        <div style="font-size:12px; line-height:1.45;">
+          <div><b>Cadence:</b> ${escapeHtml(normalizeCadence(ord.cadence) || ord.cadence || '—')}</div>
+          <div><b>Preferred day:</b> ${escapeHtml(ord.preferred_service_day||'—')}</div>
+          <div><b>Status:</b> ${escapeHtml(ord.status||'new')}</div>
+          <div><b>Monthly:</b> ${escapeHtml(fmtMoney(ord.monthly_total || ord.due_today || 0))}</div>
+          <div><b>Age:</b> ${days===null ? '—' : escapeHtml(days+'d')} <span style="opacity:.7">(${escapeHtml(bucket)})</span></div>
+          <div><b>ZIP:</b> ${escapeHtml(zip||'—')}</div>
+        </div>
+      </div>
+    `;
 
+    const color = colorFor(ord);
+    const marker = L.circleMarker([lat,lng], {
+      radius: 8,
+      color: color,
+      weight: 2,
+      fillColor: color,
+      fillOpacity: 0.85
+    }).addTo(state.map);
+
+    // Hover tooltip (sticky) as requested
+    marker.bindTooltip(popup, { sticky:true, direction:'top', opacity:0.98, className:'map-tooltip' });
+
+    state.mapLayers.markers.push(marker);
     points.push([lat,lng]);
   }
 
@@ -1128,55 +1270,17 @@ async function renderMap(){
   }
   if (empty) empty.style.display = 'none';
 
-  // Markers + popups
-  for (const [key, items] of byOpDay.entries()){
-    const [opId, date] = key.split('|');
-    const color = state.operatorColors[opId] || '#9099a8';
-    for (const item of items){
-      const ord = item.ord;
-      const a = item.a;
-      const op = opsById.get(a.operator_id);
-      const title = ord.biz_name || ord.business_name || ord.contact_name || 'Stop';
-      const popup = `
-        <div style="min-width:220px">
-          <div style="font-weight:700; margin-bottom:4px;">${escapeHtml(title)}</div>
-          <div style="color:#444; font-size:12px; margin-bottom:6px;">${escapeHtml(ord.address||'')}</div>
-          <div style="font-size:12px;">
-            <div><b>Date:</b> ${escapeHtml(a.service_date)}</div>
-            <div><b>Operator:</b> ${escapeHtml(op?.name || 'Unassigned')}</div>
-            <div><b>Cadence:</b> ${escapeHtml(ord.cadence||'')}</div>
-            <div><b>Amount:</b> ${escapeHtml(fmtMoney(ord.monthly_total || ord.due_today || 0))}</div>
-          </div>
-        </div>
-      `;
-
-      const marker = L.circleMarker([Number(ord.lat), Number(ord.lng)], {
-        radius: 8,
-        color: color,
-        weight: 2,
-        fillColor: color,
-        fillOpacity: 0.85
-      }).addTo(state.map);
-
-      marker.bindPopup(popup);
-      state.mapLayers.markers.push(marker);
-    }
-  }
-
-  // Route lines by operator/day
-  for (const [key, items] of byOpDay.entries()){
-    if (items.length < 2) continue;
-    const [opId] = key.split('|');
-    const color = state.operatorColors[opId] || '#9099a8';
-    const latlngs = items.map(it => [it.lat, it.lng]);
-    const line = L.polyline(latlngs, { color, weight: 3, opacity: 0.7 }).addTo(state.map);
-    state.mapLayers.lines.push(line);
-  }
-
   const bounds = L.latLngBounds(points);
   state.map.fitBounds(bounds.pad(0.18));
 }
 
+function getCssVar(name){
+  try{
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }catch(e){
+    return '';
+  }
+}
 function clearMapLayers(){
   (state.mapLayers.markers||[]).forEach(m => { try{ m.remove(); }catch(_){} });
   (state.mapLayers.lines||[]).forEach(l => { try{ l.remove(); }catch(_){} });

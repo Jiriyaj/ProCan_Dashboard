@@ -369,3 +369,56 @@ input:focus, select:focus{border-color:rgba(40,199,255,.55); box-shadow:0 0 0 4p
   font-size:12px;
 }
 .kpi:hover .kpi-hover{display:block;}
+
+/* ===== Home orders grouping ===== */
+.grid.two{
+  display:grid;
+  grid-template-columns: 2fr 1fr;
+  gap:16px;
+}
+@media (max-width: 1100px){
+  .grid.two{ grid-template-columns: 1fr; }
+}
+
+.chips{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding: 0 16px 12px 16px;
+}
+.chip{
+  font-size:12px;
+  border:1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  padding:6px 10px;
+  border-radius:999px;
+}
+.chip b{ font-weight:700; margin-right:6px; }
+
+/* Leaflet tooltip styling */
+.leaflet-tooltip.map-tooltip{
+  background: rgba(15, 19, 26, 0.95);
+  color: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+.leaflet-tooltip.map-tooltip:before{
+  border-top-color: rgba(15, 19, 26, 0.95);
+}
+
+/* Home orders table helpers */
+.group-row td{
+  background: rgba(255,255,255,0.03);
+  color: var(--muted);
+  font-size:12px;
+  letter-spacing: .02em;
+  text-transform: none;
+  border-top: 1px solid var(--stroke);
+}
+tr.clickable{ cursor:pointer; }
+tr.clickable:hover td{
+  background: rgba(40,199,255,0.05);
+}
