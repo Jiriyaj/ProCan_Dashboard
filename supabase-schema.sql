@@ -61,3 +61,13 @@ END $$;
 -- 3) Assignments: ordering within a day
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS stop_order integer DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_assignments_date_order ON public.assignments(service_date, stop_order);
+
+
+-- 4) Orders: scheduling metadata (route rhythm + lifecycle)
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS is_deposit boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS service_day integer,               -- 0=Sun..6=Sat
+  ADD COLUMN IF NOT EXISTS route_start_date date,            -- anchor date for every-other-week rhythm
+  ADD COLUMN IF NOT EXISTS last_service_date date,           -- updated when a job is completed
+  ADD COLUMN IF NOT EXISTS route_operator_id uuid;           -- preferred operator for this route/order
+

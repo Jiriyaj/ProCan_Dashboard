@@ -43,6 +43,69 @@ const normalizeDay = (v) => {
 };
 const dayName = (dow) => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow];
 
+const daysBetween = (a,b) => {
+  const da = (a instanceof Date) ? a : parseISO(a);
+  const db = (b instanceof Date) ? b : parseISO(b);
+  if (!da || !db) return null;
+  const ms = db.setHours(0,0,0,0) - da.setHours(0,0,0,0);
+  return Math.floor(ms / 86400000);
+};
+const weeksBetween = (a,b) => {
+  const d = daysBetween(a,b);
+  return d==null ? null : Math.floor(d / 7);
+};
+const isoDow = (iso) => {
+  const d = parseISO(iso);
+  return d ? d.getDay() : null;
+};
+const nextDateForDow = (dow, fromDate=new Date()) => {
+  const d = new Date(fromDate);
+  d.setHours(0,0,0,0);
+  const diff = (dow - d.getDay() + 7) % 7;
+  d.setDate(d.getDate() + (diff===0 ? 7 : diff));
+  return d;
+};
+
+// Route rhythm: the ROUTE runs every other week on its assigned day.
+// Customer service_frequency is stored on the order as `cadence` ("biweekly" or "monthly").
+function isOrderDueOnRunDate(order, runISO){
+  const freq = String(order?.cadence || order?.service_frequency || '').toLowerCase();
+  const billing = String(order?.billing_status || 'active').toLowerCase();
+  if (billing && billing !== 'active') return false;
+
+  // Must have a service day assigned
+  const sd = (order?.service_day != null) ? Number(order.service_day) : normalizeDay(order?.service_day);
+  if (sd == null) return false;
+
+  // Run date must match service day
+  if (isoDow(runISO) !== sd) return false;
+
+  // Biweekly: due on every route run that aligns with route_start_date anchor (even week offset)
+  if (freq.includes('biweek')){
+    const anchor = order?.route_start_date || order?.service_start_date || order?.created_at;
+    const w = weeksBetween(anchor, runISO);
+    if (w == null) return false;
+    return (w % 2) === 0;
+  }
+
+  // Monthly: due when >= 28 days since last service; first run after start is due.
+  if (freq.includes('month')){
+    const last = order?.last_service_date;
+    if (!last) {
+      // If no prior service, due on first eligible run at/after route_start_date
+      const anchor = order?.route_start_date || order?.service_start_date || order?.created_at;
+      const anchorISO = anchor ? toISODate(parseISO(anchor) || new Date(anchor)) : null;
+      if (!anchorISO) return true;
+      return runISO >= anchorISO;
+    }
+    const d = daysBetween(last, runISO);
+    return d != null && d >= 28;
+  }
+
+  // Default: treat unknown as not due
+  return false;
+}
+
 /* ========= Order lifecycle (deposit → scheduled) =========
    Early-stage reality:
    - Intake orders arrive as deposit/reservation records.
@@ -208,8 +271,22 @@ function wireUI(){
   }
 
   // schedule + map + orders filters
-  on('filterOperator', 'change', () => renderSchedule());
-  on('filterRange', 'change', () => renderSchedule());
+  on('filterOperator', 'change', () => renderSchedule()); // legacy (optional)
+  on('filterRange', 'change', () => renderSchedule());    // legacy (optional)
+
+  on('scheduleDay', 'change', () => {
+    // set a sensible default run date for the chosen day
+    const sd = $('scheduleDay')?.value;
+    const dow = sd === 'all' ? null : Number(sd);
+    const rd = $('scheduleRunDate');
+    if (rd && dow != null){
+      // pick next occurrence of this day
+      rd.value = toISODate(nextDateForDow(dow, new Date()));
+    }
+    renderSchedule();
+  });
+  on('scheduleRunDate', 'change', () => renderSchedule());
+  on('btnGenerateRun', 'click', () => generateRunAssignments());
   on('mapCadence', 'change', () => renderMap());
   on('mapStatus', 'change', () => renderMap());
   on('ordersStatus', 'change', () => renderOrders());
@@ -417,6 +494,23 @@ function hydrateFilters(){
   // Map filters
   cadenceSel($('mapCadence'));
   statusSel($('mapStatus'));
+
+
+  // Schedule controls
+  const sd = $('scheduleDay');
+  if (sd){
+    const current = sd.value || 'all';
+    sd.innerHTML='';
+    sd.append(new Option('All days','all'));
+    [1,2,3,4,5,6,0].forEach(d=> sd.append(new Option(dayName(d), String(d))));
+    sd.value = current;
+  }
+  const rd = $('scheduleRunDate');
+  if (rd && !rd.value){
+    // default to next Monday
+    rd.value = toISODate(nextDateForDow(1, new Date()));
+  }
+
 }
 
 /* ========= Auto-assign =========
@@ -837,27 +931,54 @@ function getRangeWindow(range){
   return { startISO: toISODate(state.weekStart), endISO: toISODate(addDays(state.weekStart,6)), label: 'This week' };
 }
 
+
 function renderSchedule(){
   const board = $('scheduleBoard');
   if (!board) return;
 
+  const runISO = $('scheduleRunDate')?.value || toISODate(new Date());
+  const dow = isoDow(runISO);
+
   const orderById = new Map(state.orders.map(o => [o.id, o]));
   const opsById = new Map(state.operators.map(o => [o.id, o]));
 
-  const opFilter = $('filterOperator')?.value || 'all';
-  const range = $('filterRange')?.value || 'week';
-  const { startISO, endISO } = getRangeWindow(range);
+  // Eligible orders: scheduled to this day and due on this run date
+  const eligible = state.orders
+    .filter(o => {
+      const sd = (o?.service_day != null) ? Number(o.service_day) : normalizeDay(o?.service_day);
+      if (sd == null) return false;
+      if (dow != null && sd !== dow) return false;
 
-  const rows = state.assignments
-    .filter(a => a.service_date >= startISO && a.service_date <= endISO)
-    .filter(a => opFilter === 'all' ? true : (a.operator_id === opFilter))
-    .sort((a,b)=>{
-      if (a.service_date !== b.service_date) return a.service_date.localeCompare(b.service_date);
-      if ((a.operator_id||'') !== (b.operator_id||'')) return (a.operator_id||'').localeCompare(b.operator_id||'');
-      return Number(a.stop_order||0) - Number(b.stop_order||0);
+      // deposit orders are only eligible once route_start_date is explicitly set (route activation)
+      const isDeposit = (o?.is_deposit === true) || String(o?.is_deposit||'').toLowerCase()==='true';
+      if (isDeposit && !o.route_start_date) return false;
+
+      // only service paid orders (billing handled separately)
+      const st = String(o?.status || 'new').toLowerCase();
+      if (st !== 'paid') return false;
+
+      return isOrderDueOnRunDate(o, runISO);
     });
 
-  // Build table
+  const existingForRun = state.assignments
+    .filter(a => a.service_date === runISO);
+
+  const asnByOrder = new Map(existingForRun.map(a => [a.order_id, a]));
+
+  const rows = eligible
+    .map(o => ({ order: o, asn: asnByOrder.get(o.id) || null }))
+    .sort((x,y)=>{
+      // Prefer stop_order if exists
+      const ax = x.asn?.stop_order ?? 9999;
+      const ay = y.asn?.stop_order ?? 9999;
+      if (ax !== ay) return ax - ay;
+      // stable fallback: by address then biz
+      const adx = String(x.order.address||'');
+      const ady = String(y.order.address||'');
+      if (adx !== ady) return adx.localeCompare(ady);
+      return String(x.order.biz_name||x.order.business_name||'').localeCompare(String(y.order.biz_name||y.order.business_name||''));
+    });
+
   board.innerHTML = '';
   const table = document.createElement('div');
   table.className = 'schedule-table';
@@ -866,6 +987,7 @@ function renderSchedule(){
   header.className = 'schedule-row header';
   header.innerHTML = `
     <div>Date</div>
+    <div>Stop</div>
     <div>Operator</div>
     <div data-col="biz">Business</div>
     <div data-col="addr">Address</div>
@@ -877,29 +999,35 @@ function renderSchedule(){
   if (!rows.length){
     const empty = document.createElement('div');
     empty.className = 'schedule-row';
-    empty.innerHTML = `<div class="muted" style="grid-column:1/-1;">No scheduled jobs in this range. Click “Generate schedule”.</div>`;
+    empty.innerHTML = `<div class="muted" style="grid-column:1/-1;">No stops due on ${escapeHtml(runISO)} for the selected day. Assign service days below, then generate the run list.</div>`;
     table.appendChild(empty);
   } else {
-    for (const a of rows){
-      const ord = orderById.get(a.order_id) || {};
-      const op = opsById.get(a.operator_id) || {};
-      const status = ord.status || 'scheduled';
+    for (const r of rows){
+      const ord = r.order;
+      const a = r.asn;
+      const op = a?.operator_id ? (opsById.get(a.operator_id) || {}) : {};
+      const stop = (a?.stop_order != null) ? Number(a.stop_order) : '';
+      const stage = stageLabelForOrder(ord, new Set()); // uses explicit is_deposit now
 
       const row = document.createElement('div');
       row.className = 'schedule-row';
-      row.dataset.assignmentId = a.id;
+      row.dataset.assignmentId = a?.id || '';
+      row.dataset.orderId = ord.id;
 
       row.innerHTML = `
-        <div>${escapeHtml(a.service_date)}</div>
+        <div>${escapeHtml(runISO)}</div>
+        <div>${escapeHtml(stop === '' ? '—' : String(stop))}</div>
         <div>${escapeHtml(op.name || 'Unassigned')}</div>
-        <div data-col="biz"><div class="title">${escapeHtml(ord.biz_name || ord.business_name || ord.contact_name || 'Order')}</div>
-          <div class="sub">${escapeHtml(ord.cadence || '')} • ${fmtMoney(ord.monthly_total || ord.due_today || 0)}</div></div>
+        <div data-col="biz">
+          <div class="title">${escapeHtml(ord.biz_name || ord.business_name || ord.contact_name || 'Order')}</div>
+          <div class="sub">${escapeHtml(String(ord.cadence||''))} • ${fmtMoney(ord.monthly_total || ord.due_today || 0)} • ${escapeHtml(stage)}</div>
+        </div>
         <div data-col="addr" class="sub">${escapeHtml(ord.address || '')}</div>
-        <div><span class="badge"><span class="dot"></span>${escapeHtml(status)}</span></div>
+        <div><span class="badge"><span class="dot"></span>${escapeHtml('due')}</span></div>
         <div class="actions">
-          <button class="btn btn-mini ghost" data-action="edit">Edit</button>
-          <button class="btn btn-mini ghost" data-action="reassign">Reassign</button>
-          <button class="btn btn-mini outline" data-action="delete">Delete</button>
+          <button class="btn btn-mini ghost" data-action="edit" ${a?'' : 'disabled'}>Edit</button>
+          <button class="btn btn-mini ghost" data-action="reassign" ${a?'' : 'disabled'}>Reassign</button>
+          <button class="btn btn-mini outline" data-action="delete" ${a?'' : 'disabled'}>Delete</button>
         </div>
       `;
       table.appendChild(row);
@@ -908,9 +1036,10 @@ function renderSchedule(){
 
   board.appendChild(table);
 
-  // Row actions
+  // Row actions (only for existing assignments)
   table.querySelectorAll('button[data-action]').forEach(btn=>{
-    btn.addEventListener('click', async (e)=>{
+    btn.addEventListener('click', async ()=>{
+      if (btn.disabled) return;
       const action = btn.dataset.action;
       const row = btn.closest('.schedule-row');
       const id = row?.dataset.assignmentId;
@@ -920,6 +1049,194 @@ function renderSchedule(){
       if (action === 'reassign') return reassignAssignment(id);
     });
   });
+
+  renderDayAssignBoard();
+}
+
+
+async function saveOrderSchedule(orderId, patch){
+  try{
+    const { error } = await supabaseClient.from('orders').update(patch).eq('id', orderId);
+    if (error) showBanner(error.message);
+    // optimistic local update
+    const idx = state.orders.findIndex(o => o.id === orderId);
+    if (idx >= 0) state.orders[idx] = { ...state.orders[idx], ...patch };
+  } catch (e){
+    showBanner(String(e?.message || e));
+  }
+}
+
+function renderDayAssignBoard(){
+  const board = $('dayAssignBoard');
+  if (!board) return;
+
+  const ops = state.operators || [];
+  const dayOptions = [
+    {label:'—', value:''},
+    {label:'Mon', value:'1'},
+    {label:'Tue', value:'2'},
+    {label:'Wed', value:'3'},
+    {label:'Thu', value:'4'},
+    {label:'Fri', value:'5'},
+    {label:'Sat', value:'6'},
+    {label:'Sun', value:'0'},
+  ];
+
+  // Show only relevant orders (ignore cancelled)
+  const visible = state.orders
+    .filter(o => !['cancelled'].includes(String(o.status||'').toLowerCase()))
+    .slice(0, 500);
+
+  board.innerHTML = '';
+  const table = document.createElement('div');
+  table.className = 'schedule-table';
+
+  const header = document.createElement('div');
+  header.className = 'schedule-row header';
+  header.innerHTML = `
+    <div data-col="biz">Business</div>
+    <div data-col="addr">Address</div>
+    <div>Cadence</div>
+    <div>Deposit</div>
+    <div>Service day</div>
+    <div>Route start</div>
+    <div>Operator</div>
+    <div style="text-align:right;">Save</div>
+  `;
+  table.appendChild(header);
+
+  if (!visible.length){
+    const empty = document.createElement('div');
+    empty.className = 'schedule-row';
+    empty.innerHTML = `<div class="muted" style="grid-column:1/-1;">No orders yet.</div>`;
+    table.appendChild(empty);
+  } else {
+    for (const o of visible){
+      const row = document.createElement('div');
+      row.className = 'schedule-row';
+      row.dataset.orderId = o.id;
+
+      const sdVal = (o.service_day != null) ? String(o.service_day) : '';
+      const startVal = o.route_start_date ? String(o.route_start_date).slice(0,10) : '';
+      const isDeposit = (o?.is_deposit === true) || String(o?.is_deposit||'').toLowerCase()==='true';
+
+      const opSel = document.createElement('select');
+      opSel.className = 'input';
+      opSel.style.height = '34px';
+      opSel.append(new Option('Unassigned',''));
+      ops.forEach(op => opSel.append(new Option(op.name, op.id)));
+      opSel.value = o.route_operator_id || '';
+
+      const daySel = document.createElement('select');
+      daySel.className = 'input';
+      daySel.style.height = '34px';
+      dayOptions.forEach(d => daySel.append(new Option(d.label, d.value)));
+      daySel.value = sdVal;
+
+      const startInput = document.createElement('input');
+      startInput.type = 'date';
+      startInput.className = 'input';
+      startInput.value = startVal;
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-mini outline';
+      saveBtn.textContent = 'Save';
+
+      // layout cells
+      const biz = escapeHtml(o.biz_name || o.business_name || o.contact_name || 'Order');
+      const addr = escapeHtml(o.address || '');
+      const cad = escapeHtml(String(o.cadence || ''));
+      const dep = isDeposit ? `<span class="badge amber"><span class="dot"></span>deposit</span>` : `<span class="badge"><span class="dot"></span>no</span>`;
+
+      row.innerHTML = `
+        <div data-col="biz"><div class="title">${biz}</div><div class="sub">${fmtMoney(o.monthly_total || o.due_today || 0)}</div></div>
+        <div data-col="addr" class="sub">${addr}</div>
+        <div>${cad}</div>
+        <div>${dep}</div>
+        <div class="cell-day"></div>
+        <div class="cell-start"></div>
+        <div class="cell-op"></div>
+        <div class="actions cell-save"></div>
+      `;
+      row.querySelector('.cell-day').appendChild(daySel);
+      row.querySelector('.cell-start').appendChild(startInput);
+      row.querySelector('.cell-op').appendChild(opSel);
+      row.querySelector('.cell-save').appendChild(saveBtn);
+
+      const gatherPatch = () => {
+        const patch = {};
+        patch.service_day = daySel.value === '' ? null : Number(daySel.value);
+        patch.route_start_date = startInput.value ? startInput.value : null;
+        patch.route_operator_id = opSel.value || null;
+        return patch;
+      };
+
+      saveBtn.addEventListener('click', async ()=>{
+        await saveOrderSchedule(o.id, gatherPatch());
+        renderSchedule();
+      });
+
+      table.appendChild(row);
+    }
+  }
+
+  board.appendChild(table);
+}
+
+async function generateRunAssignments(){
+  const runISO = $('scheduleRunDate')?.value;
+  if (!runISO) return showBanner('Pick a run date first.');
+  const dow = isoDow(runISO);
+
+  // Build due list in the same order as renderSchedule uses
+  const due = state.orders
+    .filter(o => {
+      const sd = (o?.service_day != null) ? Number(o.service_day) : normalizeDay(o?.service_day);
+      if (sd == null || sd !== dow) return false;
+
+      const isDeposit = (o?.is_deposit === true) || String(o?.is_deposit||'').toLowerCase()==='true';
+      if (isDeposit && !o.route_start_date) return false;
+
+      const st = String(o?.status || 'new').toLowerCase();
+      if (st !== 'paid') return false;
+
+      return isOrderDueOnRunDate(o, runISO);
+    })
+    .sort((a,b)=>{
+      const adx = String(a.address||'');
+      const ady = String(b.address||'');
+      if (adx !== ady) return adx.localeCompare(ady);
+      return String(a.biz_name||a.business_name||'').localeCompare(String(b.biz_name||b.business_name||''));
+    });
+
+  if (!due.length){
+    showBanner('No due stops for that run date.');
+    return;
+  }
+
+  const existing = state.assignments.filter(a => a.service_date === runISO);
+  const existingByOrder = new Map(existing.map(a => [a.order_id, a]));
+  let nextStop = existing.reduce((m,a)=>Math.max(m, Number(a.stop_order||0)), 0) + 1;
+
+  const upserts = [];
+  for (const o of due){
+    const ex = existingByOrder.get(o.id);
+    upserts.push({
+      id: ex?.id, // keep id if present
+      order_id: o.id,
+      service_date: runISO,
+      operator_id: o.route_operator_id || ex?.operator_id || null,
+      stop_order: (ex?.stop_order != null) ? Number(ex.stop_order) : nextStop++
+    });
+  }
+
+  const { error } = await supabaseClient.from('assignments').upsert(upserts, { onConflict: 'order_id,service_date' });
+  if (error){
+    showBanner(error.message);
+    return;
+  }
+  await refreshAll(false);
+  renderSchedule();
 }
 
 async function deleteAssignment(id){
@@ -953,66 +1270,57 @@ ${options}`, a.operator_id || 'unassigned');
 }
 
 
+
 function printSchedulePDF(){
-  const opFilter = $('filterOperator')?.value || 'all';
-  const range = 'week'; // PDF is weekly dispatch sheet
-  const { startISO, endISO } = getRangeWindow(range);
+  const runISO = $('scheduleRunDate')?.value || toISODate(new Date());
   const orderById = new Map(state.orders.map(o => [o.id, o]));
   const opsById = new Map(state.operators.map(o => [o.id, o]));
 
-  if (opFilter === 'all'){
-    alert('Select an operator first (top of Schedule) before printing.');
-    return;
-  }
-
   const rows = state.assignments
-    .filter(a => a.service_date >= startISO && a.service_date <= endISO)
-    .filter(a => a.operator_id === opFilter)
-    .sort((a,b)=> a.service_date.localeCompare(b.service_date) || (Number(a.stop_order||0)-Number(b.stop_order||0)));
+    .filter(a => a.service_date === runISO)
+    .sort((a,b)=> (Number(a.stop_order||0)-Number(b.stop_order||0)));
 
-  const op = opsById.get(opFilter);
-  const title = `ProCan Weekly Route Sheet — ${op?.name || 'Operator'} — Week of ${startISO}`;
+  const title = `ProCan Run Sheet — ${runISO}`;
 
   const w = window.open('', '_blank');
-  if (!w) return alert('Pop-up blocked. Allow pop-ups to print.');
+  if (!w) return;
 
-  const style = `
+  w.document.write(`
+    <html><head><title>${escapeHtml(title)}</title>
     <style>
-      body{font-family:Arial, sans-serif; padding:18px;}
-      h1{font-size:18px; margin:0 0 10px;}
-      .sub{color:#555; margin:0 0 14px;}
-      table{width:100%; border-collapse:collapse; font-size:12px;}
-      th,td{border:1px solid #ddd; padding:8px; vertical-align:top;}
-      th{background:#f4f4f4; text-align:left;}
-      .day{background:#fafafa; font-weight:700;}
+      body{font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding:18px;}
+      h1{font-size:18px;margin:0 0 8px;}
+      .sub{color:#555;margin:0 0 14px;font-size:12px;}
+      table{width:100%;border-collapse:collapse;font-size:12px;}
+      th,td{border-bottom:1px solid #ddd;padding:8px;text-align:left;vertical-align:top;}
+      th{background:#f7f7f7;}
+      .muted{color:#666;}
     </style>
-  `;
-
-  let html = `${style}<h1>${title}</h1><div class="sub">Stops are ordered top-to-bottom for each day.</div>`;
-  html += `<table><thead><tr><th>Date</th><th>Stop</th><th>Business</th><th>Address</th><th>Notes</th></tr></thead><tbody>`;
-
-  if (!rows.length){
-    html += `<tr><td colspan="5">No jobs scheduled for this operator this week.</td></tr>`;
-  } else {
-    for (const a of rows){
-      const ord = orderById.get(a.order_id) || {};
-      html += `<tr>
-        <td>${a.service_date}</td>
-        <td>${Number(a.stop_order||0)+1}</td>
-        <td>${escapeHtml(ord.biz_name || ord.business_name || ord.contact_name || 'Order')}</td>
-        <td>${escapeHtml(ord.address || '')}</td>
-        <td>${escapeHtml(ord.notes || '')}</td>
-      </tr>`;
-    }
-  }
-
-  html += `</tbody></table>`;
-  w.document.open();
-  w.document.write(html);
+    </head><body>
+      <h1>${escapeHtml(title)}</h1>
+      <p class="sub">Generated from ProCan dashboard</p>
+      <table>
+        <thead><tr><th>Stop</th><th>Operator</th><th>Business</th><th>Address</th><th>Cadence</th></tr></thead>
+        <tbody>
+          ${rows.map(a=>{
+            const o = orderById.get(a.order_id) || {};
+            const op = a.operator_id ? (opsById.get(a.operator_id) || {}) : {};
+            return `<tr>
+              <td>${escapeHtml(String(a.stop_order||''))}</td>
+              <td>${escapeHtml(op.name||'Unassigned')}</td>
+              <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
+              <td class="muted">${escapeHtml(o.address||'')}</td>
+              <td class="muted">${escapeHtml(String(o.cadence||''))}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <script>window.print();<\/script>
+    </body></html>
+  `);
   w.document.close();
-  w.focus();
-  w.print();
 }
+
 
 
 /* ========= Orders ========= */

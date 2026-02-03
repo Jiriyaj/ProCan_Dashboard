@@ -156,16 +156,22 @@
           <div class="card-head">
             <div>
               <div class="card-title">Schedule</div>
-              <div class="card-sub">Weekly dispatch list. Assign/reassign and edit jobs.</div>
+              <div class="card-sub">Route day planning + run sheet. Assign service days, then generate the next run list.</div>
             </div>
             <div class="filters">
-              <select id="filterOperator"></select>
-              <select id="filterRange"></select>
-              <button class="btn ghost" id="btnPrintSchedule">Print PDF</button>
-            </div>
+              
+<select id="scheduleDay"></select>
+<input type="date" id="scheduleRunDate" />
+<button class="btn outline" id="btnGenerateRun">Generate run list</button>
+<button class="btn ghost" id="btnPrintSchedule">Print PDF</button>
+</div>
           </div>
           <div class="schedule" id="scheduleBoard"></div>
-        </div>
+        
+          <div class="divider" style="margin-top:16px;"></div>
+          <div class="card-sub" style="margin-top:12px;">Assign a fixed service day to each order (this is your route day). Once assigned, the run sheet above will show who is due on the selected run date.</div>
+          <div class="schedule" id="dayAssignBoard"></div>
+</div>
       </section>
 
       <!-- MAP -->
