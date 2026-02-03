@@ -113,58 +113,67 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 /* ========= UI wiring ========= */
 function wireUI(){
+  const on = (id, evt, fn) => {
+    const el = $(id);
+    if (el) el.addEventListener(evt, fn);
+  };
+
   // nav
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
 
-  $('btnLogin').addEventListener('click', loginWithPassword);
-  $('btnMagic').addEventListener('click', sendMagicLink);
-  $('btnLogout').addEventListener('click', async () => {
+  on('btnLogin', 'click', loginWithPassword);
+  on('btnMagic', 'click', sendMagicLink);
+  on('btnLogout', 'click', async () => {
     if (!supabaseClient) return;
     await supabaseClient.auth.signOut();
   });
 
-  $('btnRefresh').addEventListener('click', async () => { await refreshAll(true); });
-  $('btnAutoAssign').addEventListener('click', async () => { await autoAssignCurrentWeek(); });
+  on('btnRefresh', 'click', async () => { await refreshAll(true); });
+  on('btnAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); });
 
-  $('btnAutoAssign2')?.addEventListener('click', async () => { await autoAssignCurrentWeek(); switchView('scheduleView'); });
-  $('btnGeocode2')?.addEventListener('click', async () => { await geocodeMissingOrders(15); await renderMap(); });
-  $('btnGoOrdersMap')?.addEventListener('click', () => switchView('ordersView'));
+  on('btnAutoAssign2', 'click', async () => { await autoAssignCurrentWeek(); switchView('scheduleView'); });
+  on('btnGeocode2', 'click', async () => { await geocodeMissingOrders(15); await renderMap(); });
+  on('btnGoOrdersMap', 'click', () => switchView('ordersView'));
 
-  $('btnGeocodeMissing')?.addEventListener('click', async () => {
+  on('btnGeocodeMissing', 'click', async () => {
     await geocodeMissingOrders(15);
     await refreshAll(false);
     await renderMap();
   });
 
-  $('btnGoSchedule').addEventListener('click', () => switchView('scheduleView'));
-  $('btnGoSchedule2')?.addEventListener('click', () => switchView('scheduleView'));
+  // NOTE: btnGoSchedule was removed from the simplified Home; keep wiring optional.
+  on('btnGoSchedule', 'click', () => switchView('scheduleView'));
+  on('btnGoSchedule2', 'click', () => switchView('scheduleView'));
 
   // week picker default
-  $('weekPicker').value = toISODate(state.weekStart);
-  $('weekPicker').addEventListener('change', async () => {
-    const d = parseISO($('weekPicker').value);
-    state.weekStart = startOfWeek(d || new Date());
-    $('weekPicker').value = toISODate(state.weekStart);
-    await refreshAll(false);
-  });
+  const wp = $('weekPicker');
+  if (wp){
+    wp.value = toISODate(state.weekStart);
+    wp.addEventListener('change', async () => {
+      const d = parseISO(wp.value);
+      state.weekStart = startOfWeek(d || new Date());
+      wp.value = toISODate(state.weekStart);
+      await refreshAll(false);
+    });
+  }
 
-  // schedule filters
-  $('filterOperator').addEventListener('change', () => renderSchedule());
-  $('filterRange').addEventListener('change', () => renderSchedule());
-  $('mapCadence')?.addEventListener('change', () => renderMap());
-  $('mapStatus')?.addEventListener('change', () => renderMap());
-  $('ordersStatus').addEventListener('change', () => renderOrders());
-  $('ordersSearch').addEventListener('input', () => renderOrders());
-  $('homeCadence')?.addEventListener('change', () => renderHome());
-  $('homeAge')?.addEventListener('change', () => renderHome());
-  $('homeSearch')?.addEventListener('input', () => renderHome());
-  $('btnGoOrdersHome')?.addEventListener('click', () => switchView('ordersView'));
-  $('btnPrintSchedule')?.addEventListener('click', () => printSchedulePDF());
-  $('btnGoOrders')?.addEventListener('click', () => switchView('ordersView'));
-  $('btnBulkAutoAssign')?.addEventListener('click', async () => { await autoAssignCurrentWeek(); await refreshAll(false); });
-  $('btnAddOperator')?.addEventListener('click', async () => { await addOperator(); });
+  // schedule + map + orders filters
+  on('filterOperator', 'change', () => renderSchedule());
+  on('filterRange', 'change', () => renderSchedule());
+  on('mapCadence', 'change', () => renderMap());
+  on('mapStatus', 'change', () => renderMap());
+  on('ordersStatus', 'change', () => renderOrders());
+  on('ordersSearch', 'input', () => renderOrders());
+  on('homeCadence', 'change', () => renderHome());
+  on('homeAge', 'change', () => renderHome());
+  on('homeSearch', 'input', () => renderHome());
+  on('btnGoOrdersHome', 'click', () => switchView('ordersView'));
+  on('btnPrintSchedule', 'click', () => printSchedulePDF());
+  on('btnGoOrders', 'click', () => switchView('ordersView'));
+  on('btnBulkAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); await refreshAll(false); });
+  on('btnAddOperator', 'click', async () => { await addOperator(); });
 
 }
 
