@@ -43,6 +43,54 @@ const normalizeDay = (v) => {
 };
 const dayName = (dow) => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow];
 
+/* ========= Order lifecycle (deposit → scheduled) =========
+   Early-stage reality:
+   - Intake orders arrive as deposit/reservation records.
+   - They become "scheduled" only after you activate a route and create assignments.
+   We don't assume a special DB column; we infer stage from:
+   - orders.status (new/paid/...) and
+   - whether any assignments exist for the order.
+*/
+function orderHasAnyAssignment(orderId){
+  return state.assignments.some(a => a.order_id === orderId);
+}
+
+function stageLabelForOrder(order, assignedSet){
+  const st = String(order?.status || 'new').toLowerCase();
+  const hasAsn = assignedSet ? assignedSet.has(order.id) : orderHasAnyAssignment(order.id);
+
+  // Explicit deposit flag from Intake/Webhook (preferred).
+  const isDeposit =
+    order?.is_deposit === true ||
+    String(order?.is_deposit || '').toLowerCase() === 'true' ||
+    order?.deposit === true ||
+    String(order?.deposit || '').toLowerCase() === 'true' ||
+    order?.deposit_only === true ||
+    String(order?.deposit_only || '').toLowerCase() === 'true' ||
+    String(order?.billing_type || '').toLowerCase() === 'deposit' ||
+    String(order?.billing || '').toLowerCase().includes('deposit');
+
+  if (st === 'cancelled') return 'cancelled';
+  if (st === 'completed') return 'completed';
+
+  // Before route activation: if deposit order, treat paid as reserved deposit.
+  if (!hasAsn){
+    if (isDeposit){
+      if (st === 'paid') return 'reserved (deposit)';
+      if (st === 'new') return 'deposit pending';
+      return st || 'deposit pending';
+    }
+    // Non-deposit orders can be scheduled immediately once you know availability.
+    if (st === 'paid') return 'ready to schedule';
+    if (st === 'new') return 'awaiting payment';
+    return st;
+  }
+
+  // After route activation: assignments exist.
+  if (st === 'paid') return 'scheduled';
+  return st;
+}
+
 /* ========= DOM ========= */
 const $ = (id) => document.getElementById(id);
 
@@ -573,6 +621,7 @@ function renderHomeOrdersInbox(){
   const ageFilter = $('homeAge')?.value || 'all';
 
   let rows = state.orders.slice();
+  const assignedSet = new Set(state.assignments.map(a => a.order_id));
 
   // Filters
   if (q){
@@ -669,6 +718,7 @@ function renderHomeOrdersInbox(){
       html.push(`<tr class="group-row"><td colspan="8">${escapeHtml(label)}</td></tr>`);
       lastKey = r.key;
     }
+    const stage = stageLabelForOrder(o, assignedSet);
     html.push(`<tr class="clickable" data-order-id="${escapeHtml(o.id)}">
       <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
       <td>${escapeHtml(o.address||'')}</td>
@@ -677,7 +727,7 @@ function renderHomeOrdersInbox(){
       <td>${r.days===null?'—':escapeHtml(String(r.days)+'d')}</td>
       <td>${escapeHtml(o.preferred_service_day||'')}</td>
       <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
-      <td>${escapeHtml(o.status||'new')}</td>
+      <td>${escapeHtml(stage)}</td>
     </tr>`);
   }
 
@@ -1220,6 +1270,8 @@ async function renderMap(){
   if (cad !== 'all') rows = rows.filter(o => normalizeCadence(o.cadence) === cad);
   if (st !== 'all') rows = rows.filter(o => String(o.status||'new') === st);
 
+  const assignedSet = new Set(state.assignments.map(a => a.order_id));
+
   // Marker colors by cadence (simple + readable)
   const colorFor = (o) => {
     const c = normalizeCadence(o.cadence);
@@ -1240,6 +1292,7 @@ async function renderMap(){
     const days = ageDaysFrom(ord);
     const bucket = ageBucket(days);
     const zip = zipFromAddress(ord.address||'');
+    const stage = stageLabelForOrder(ord, assignedSet);
     const popup = `
       <div style="min-width:240px">
         <div style="font-weight:800; margin-bottom:4px;">${escapeHtml(title)}</div>
@@ -1247,7 +1300,7 @@ async function renderMap(){
         <div style="font-size:12px; line-height:1.45;">
           <div><b>Cadence:</b> ${escapeHtml(normalizeCadence(ord.cadence) || ord.cadence || '—')}</div>
           <div><b>Preferred day:</b> ${escapeHtml(ord.preferred_service_day||'—')}</div>
-          <div><b>Status:</b> ${escapeHtml(ord.status||'new')}</div>
+          <div><b>Status:</b> ${escapeHtml(stage)}</div>
           <div><b>Monthly:</b> ${escapeHtml(fmtMoney(ord.monthly_total || ord.due_today || 0))}</div>
           <div><b>Age:</b> ${days===null ? '—' : escapeHtml(days+'d')} <span style="opacity:.7">(${escapeHtml(bucket)})</span></div>
           <div><b>ZIP:</b> ${escapeHtml(zip||'—')}</div>
