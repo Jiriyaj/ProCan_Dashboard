@@ -1,23 +1,40 @@
 
-(function(){
-'use strict';
-// ROUTE-FIRST MODEL ENABLED
-// Orders attach to routes. Operators attach to routes.
+async function probeSchema(){
+  // Detect if routes table + orders.route_id exist. Safe: if not, we just disable route-first UI.
+  try{
+    const r = await sb.from('routes').select('id,name,service_day,status,target_cans,operator_id').limit(1);
+    if (!r.error) state.supportsRoutes = true;
+  }catch(e){}
+  try{
+    const o = await sb.from('orders').select('id,route_id').limit(1);
+    if (!o.error){
+      state.supportsOrdersRouteId = true;
+    }
+  }catch(e){}
+  const notice = document.getElementById('routesSchemaNotice');
+  if (notice){
+    notice.style.display = (state.supportsRoutes && state.supportsOrdersRouteId) ? 'none' : 'block';
+  }
+}
 
+// ROUTE-FIRST MODEL: Orders attach to routes. Operators attach to routes.
 
 'use strict';
 
 /* ========= Helpers ========= */
 const fmtMoney = (n) => {
   const v = Number(n || 0);
+  return v.toLocaleString('en-US', { style:'currency', currency:'USD' });
 };
 const payoutToPercent = (v) => {
   const n = Number(v);
   if (!isFinite(n)) return 30;
+  return (state?.payoutMode === 'fraction') ? (n * 100) : n;
 };
 const payoutFromPercent = (p) => {
   const n = Number(p);
   if (!isFinite(n)) return 30;
+  return (state?.payoutMode === 'fraction') ? (n / 100) : n;
 };
 const sanitizeSchedulePatch = (patch) => {
   const out = { ...patch };
@@ -25,8 +42,12 @@ const sanitizeSchedulePatch = (patch) => {
     const v = out.service_day;
     out.service_day = (v === '' || v == null) ? null : Number(v);
   }
+  if ('route_operator_id' in out){
     if (state && state.supportsRouteOperatorId === false){
+      delete out.route_operator_id;
     } else {
+      const v = out.route_operator_id;
+      out.route_operator_id = (v === '' || v == null) ? null : String(v);
     }
   }
   if ('route_start_date' in out){
@@ -38,11 +59,13 @@ const sanitizeSchedulePatch = (patch) => {
     out.last_service_date = (v === '' || v == null) ? null : String(v);
   }
   if ('is_deposit' in out) out.is_deposit = !!out.is_deposit;
+  return out;
 };
 
 const fmtSbError = (error) => {
   if (!error) return 'Unknown error';
   const parts = [error.message, error.details, error.hint, error.code].filter(Boolean);
+  return parts.join(' • ');
 };
 
 const toISODate = (d) => new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
@@ -50,18 +73,21 @@ const parseISO = (s) => {
   const m = String(s||'').trim();
   if (!m) return null;
   const d = new Date(m);
+  return isNaN(d) ? null : d;
 };
 const startOfWeek = (date) => {
   const d = new Date(date);
   const day = (d.getDay() + 6) % 7; // Mon=0
   d.setHours(0,0,0,0);
   d.setDate(d.getDate() - day);
+  return d;
 };
 const addDays = (date, n) => { const d=new Date(date); d.setDate(d.getDate()+n); return d; };
 const sameISO = (a,b) => String(a||'')===String(b||'');
 const zipFromAddress = (addr) => {
   const s = String(addr||'');
   const m = s.match(/\b(\d{5})(?:-\d{4})?\b/);
+  return m ? m[1] : '';
 };
 const normalizeDay = (v) => {
   const s = String(v||'').toLowerCase();
@@ -75,6 +101,7 @@ const normalizeDay = (v) => {
   if (s.includes('sun')) return 0;
   // numeric?
   const n = parseInt(s,10);
+  return Number.isFinite(n) ? n : null;
 };
 const dayName = (dow) => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow];
 
@@ -83,18 +110,22 @@ const daysBetween = (a,b) => {
   const db = (b instanceof Date) ? b : parseISO(b);
   if (!da || !db) return null;
   const ms = db.setHours(0,0,0,0) - da.setHours(0,0,0,0);
+  return Math.floor(ms / 86400000);
 };
 const weeksBetween = (a,b) => {
   const d = daysBetween(a,b);
+  return d==null ? null : Math.floor(d / 7);
 };
 const isoDow = (iso) => {
   const d = parseISO(iso);
+  return d ? d.getDay() : null;
 };
 const nextDateForDow = (dow, fromDate=new Date()) => {
   const d = new Date(fromDate);
   d.setHours(0,0,0,0);
   const diff = (dow - d.getDay() + 7) % 7;
   d.setDate(d.getDate() + (diff===0 ? 7 : diff));
+  return d;
 };
 
 // Route rhythm: the ROUTE runs every other week on its assigned day.
@@ -116,6 +147,7 @@ function isOrderDueOnRunDate(order, runISO){
     const anchor = order?.route_start_date || order?.service_start_date || order?.created_at;
     const w = weeksBetween(anchor, runISO);
     if (w == null) return false;
+    return (w % 2) === 0;
   }
 
   // Monthly: due when >= 28 days since last service; first run after start is due.
@@ -126,11 +158,14 @@ function isOrderDueOnRunDate(order, runISO){
       const anchor = order?.route_start_date || order?.service_start_date || order?.created_at;
       const anchorISO = anchor ? toISODate(parseISO(anchor) || new Date(anchor)) : null;
       if (!anchorISO) return true;
+      return runISO >= anchorISO;
     }
     const d = daysBetween(last, runISO);
+    return d != null && d >= 28;
   }
 
   // Default: treat unknown as not due
+  return false;
 }
 
 /* ========= Order lifecycle (deposit → scheduled) =========
@@ -142,6 +177,7 @@ function isOrderDueOnRunDate(order, runISO){
    - whether any assignments exist for the order.
 */
 function orderHasAnyAssignment(orderId){
+  return state.assignments.some(a => a.order_id === orderId);
 }
 
 function stageLabelForOrder(order, assignedSet){
@@ -170,16 +206,19 @@ function stageLabelForOrder(order, assignedSet){
       if (st === 'paid' && hasRouteConfig) return 'activated (deposit)';
       if (st === 'paid') return 'reserved (deposit)';
       if (st === 'new') return 'deposit pending';
+      return st || 'deposit pending';
     }
 
     // Non-deposit orders
     if (st === 'paid' && hasRouteConfig) return 'scheduled (configured)';
     if (st === 'paid') return 'ready to schedule';
     if (st === 'new') return 'awaiting payment';
+    return st;
   }
 
   // After route activation: assignments exist.
   if (st === 'paid') return 'scheduled';
+  return st;
 }
 
 /* ========= DOM ========= */
@@ -194,6 +233,7 @@ function supabaseReady(){
   const key = String(window.SUPABASE_ANON_KEY||'');
   if (!url || !key) return false;
   if (url.includes('YOURPROJECT') || key.includes('YOUR_SUPABASE') || key.length < 30) return false;
+  return !!window.supabase;
 }
 
 function initSupabase(){
@@ -202,10 +242,17 @@ function initSupabase(){
   supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
     auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
   });
+  return supabaseClient;
 }
 
 /* ========= State ========= */
 const state = {
+  // Route-first support flags (set after schema probe)
+  supportsRoutes: false,
+  supportsOrdersRouteId: false,
+  selectedRouteId: null,
+  routes: [],
+
   view: 'homeView',
   weekStart: startOfWeek(new Date()),
   operators: [],
@@ -233,6 +280,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (!supabaseClient){
     showAuthMessage('Supabase not configured. Fill SUPABASE_URL + SUPABASE_ANON_KEY in supabase-config.js');
     $('authGate').style.display='grid';
+    return;
   }
 
   // auth state
@@ -403,6 +451,7 @@ async function refreshAll(showBannerOnErrors){
       if (showBannerOnErrors) {
         showBanner(`Missing or inaccessible table "${table}". Run the dashboard schema SQL (operators, orders, assignments) and ensure RLS allows authenticated access.`);
       }
+      return;
     }
   }
 
@@ -423,6 +472,7 @@ async function refreshAll(showBannerOnErrors){
     const msg = asnRes.error.code === 'PGRST204'
       ? `Assignments query failed: ${asnRes.error.message}. This usually means a missing column (e.g., stop_order). Run the latest supabase-schema.sql patch (adds assignments.stop_order).`
       : asnRes.error.message;
+    return showBanner(msg);
   }
 
   state.operators = opsRes.data || [];
@@ -434,7 +484,9 @@ async function refreshAll(showBannerOnErrors){
   } catch(e) { state.payoutMode = 'percent'; }
 
   state.orders = ordRes.data || [];
+  // Detect whether orders table supports route_operator_id (some DBs may not have this column yet)
   try {
+    state.supportsRouteOperatorId = (state.orders.length > 0) ? Object.prototype.hasOwnProperty.call(state.orders[0], 'route_operator_id') : state.supportsRouteOperatorId;
   } catch(e) {}
   state.assignments = asnRes.data || [];
 
@@ -559,6 +611,7 @@ async function autoAssignCurrentWeek(){
   if (!state.operators.length){
     showBanner('Add at least one operator first (Operators tab).');
     switchView('operatorsView');
+    return;
   }
 
   const weekStartISO = toISODate(state.weekStart);
@@ -581,6 +634,7 @@ async function autoAssignCurrentWeek(){
     // if start_date exists and is after week end, skip
     const sd = parseISO(o.start_date);
     if (sd && toISODate(sd) > weekEndISO) return false;
+    return true;
   });
 
   // Determine which date in this week each order should be scheduled on
@@ -613,6 +667,7 @@ async function autoAssignCurrentWeek(){
       const tYear = target.getFullYear();
       const existingThisMonth = state.assignments.some(a => a.order_id === o.id && (() => {
         const ad = parseISO(a.service_date);
+        return ad && ad.getMonth()===tMonth && ad.getFullYear()===tYear;
       })());
       if (existingThisMonth) continue;
     }
@@ -639,6 +694,7 @@ async function autoAssignCurrentWeek(){
 
   if (!inserts.length){
     showBanner('Nothing new to auto-assign for this week.');
+    return;
   }
 
   // Insert with upsert to avoid duplicates. Requires unique(order_id, service_date).
@@ -646,6 +702,7 @@ async function autoAssignCurrentWeek(){
   if (error){
     // most common: unique constraint still on order_id only
     showBanner(`Auto-assign failed: ${error.message}. If it says duplicate key on order_id, update assignments unique constraint to (order_id, service_date).`);
+    return;
   }
 
   await refreshAll(false);
@@ -716,6 +773,7 @@ function normalizeCadence(c){
   if (s.includes('month')) return 'monthly';
   if (s.includes('week')) return 'weekly';
   if (s.includes('one')) return 'one-time';
+  return s;
 }
 
 function ageDaysFrom(order){
@@ -723,6 +781,7 @@ function ageDaysFrom(order){
   if (!d) return null;
   const now = new Date(); now.setHours(0,0,0,0);
   const dd = new Date(d); dd.setHours(0,0,0,0);
+  return Math.max(0, Math.round((now - dd) / 86400000));
 }
 
 function ageBucket(days){
@@ -730,6 +789,7 @@ function ageBucket(days){
   if (days <= 7) return '0–7d';
   if (days <= 14) return '8–14d';
   if (days <= 30) return '15–30d';
+  return '31+d';
 }
 
 function renderHomeOrdersInbox(){
@@ -764,6 +824,7 @@ function renderHomeOrdersInbox(){
       if (ageFilter === '8-14') return d >= 8 && d <= 14;
       if (ageFilter === '15-30') return d >= 15 && d <= 30;
       if (ageFilter === '31+') return d >= 31;
+      return true;
     });
   }
 
@@ -774,6 +835,7 @@ function renderHomeOrdersInbox(){
     const zip = zipFromAddress(o.address || '');
     const days = ageDaysFrom(o);
     const bucket = ageBucket(days);
+    return { o, cad, zip, days, bucket, key: `${cad||'—'}|${zip||'—'}|${bucket}` };
   });
 
   rows.sort((a,b)=>{
@@ -785,6 +847,7 @@ function renderHomeOrdersInbox(){
     const ad = (a.days===null ? -1 : a.days);
     const bd = (b.days===null ? -1 : b.days);
     if (ad !== bd) return bd - ad;
+    return String(b.o.created_at||'').localeCompare(String(a.o.created_at||''));
   });
 
   // Chips summary (quick clustering hints)
@@ -848,6 +911,7 @@ function renderHomeOrdersInbox(){
       <td>${((o?.is_deposit===true)||String(o?.is_deposit||'').toLowerCase()==='true') ? '<span class="badge amber"><span class="dot"></span>deposit</span>' : '<span class="badge"><span class="dot"></span>—</span>'}</td>
       <td>${(o.service_day!=null && String(o.service_day)!=='') ? escapeHtml(dayName(Number(o.service_day))) : '—'}</td>
       <td>${o.route_start_date ? escapeHtml(String(o.route_start_date).slice(0,10)) : '—'}</td>
+      <td>${o.route_operator_id ? escapeHtml((opsById.get(o.route_operator_id)?.name)||'') : '—'}</td>
       <td>${escapeHtml(stage)}</td>
     </tr>`);
   }
@@ -902,6 +966,7 @@ function renderNextAvailable(){
   if (!chosen){
     el.textContent = 'No openings';
     if (sub) sub.textContent = `Fully booked for the next ${LOOKAHEAD_DAYS} days (capacity ${DAILY_STOP_CAPACITY}/day)`;
+    return;
   }
 
   el.textContent = chosen.iso;
@@ -936,6 +1001,7 @@ function renderRow({title, sub, badges=[]}){
     right.appendChild(s);
   });
   d.append(left, right);
+  return d;
 }
 
 /* ========= Schedule ========= */
@@ -943,13 +1009,16 @@ function getRangeWindow(range){
   const now = new Date();
   const todayISO = toISODate(now);
   if (range === 'today'){
+    return { startISO: todayISO, endISO: todayISO, label: 'Today' };
   }
   if (range === 'month'){
     const d = new Date(state.weekStart);
     const first = new Date(d.getFullYear(), d.getMonth(), 1);
     const last = new Date(d.getFullYear(), d.getMonth()+1, 0);
+    return { startISO: toISODate(first), endISO: toISODate(last), label: 'This month' };
   }
   // default week (based on week picker)
+  return { startISO: toISODate(state.weekStart), endISO: toISODate(addDays(state.weekStart,6)), label: 'This week' };
 }
 
 
@@ -978,6 +1047,7 @@ function renderSchedule(){
       const st = String(o?.status || 'new').toLowerCase();
       if (st !== 'paid') return false;
 
+      return isOrderDueOnRunDate(o, runISO);
     });
 
   const existingForRun = state.assignments
@@ -996,6 +1066,7 @@ function renderSchedule(){
       const adx = String(x.order.address||'');
       const ady = String(y.order.address||'');
       if (adx !== ady) return adx.localeCompare(ady);
+      return String(x.order.biz_name||x.order.business_name||'').localeCompare(String(y.order.biz_name||y.order.business_name||''));
     });
 
   board.innerHTML = '';
@@ -1080,6 +1151,7 @@ async function saveOrderSchedule(orderId, patch){
     const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRe.test(idStr)){
       showBanner('Could not save: invalid order id (selection bug).');
+      return false;
     }
     const clean = sanitizeSchedulePatch(patch);
     const { data, error } = await supabaseClient
@@ -1090,6 +1162,7 @@ async function saveOrderSchedule(orderId, patch){
 
     if (error){
       showBanner(fmtSbError(error));
+      return false;
     }
 
     // Update local cache from returned row (source of truth)
@@ -1098,8 +1171,10 @@ async function saveOrderSchedule(orderId, patch){
     if (idx >= 0 && row) state.orders[idx] = row;
 
     hideBanner();
+    return true;
   } catch (e){
     showBanner(String(e?.message || e));
+    return false;
   }
 }
 
@@ -1169,9 +1244,11 @@ function renderDayAssignBoard(){
       opSel.append(new Option('Unassigned',''));
       ops.forEach(op => opSel.append(new Option(op.name, op.id)));
       if (state.supportsRouteOperatorId){
+        opSel.value = o.route_operator_id || '';
       } else {
         opSel.value = '';
         opSel.disabled = true;
+        opSel.title = "Operator preference column missing in Supabase orders table. Add route_operator_id (uuid) to enable per-order operator selection.";
       }
 
       const daySel = document.createElement('select');
@@ -1214,6 +1291,8 @@ function renderDayAssignBoard(){
         const patch = {};
         patch.service_day = daySel.value === '' ? null : Number(daySel.value);
         patch.route_start_date = startInput.value ? startInput.value : null;
+        if (state.supportsRouteOperatorId) patch.route_operator_id = opSel.value || null;
+        return patch;
       };
 
       saveBtn.addEventListener('click', async ()=>{
@@ -1258,15 +1337,18 @@ async function generateRunAssignments(){
       const st = String(o?.status || 'new').toLowerCase();
       if (st !== 'paid') return false;
 
+      return isOrderDueOnRunDate(o, runISO);
     })
     .sort((a,b)=>{
       const adx = String(a.address||'');
       const ady = String(b.address||'');
       if (adx !== ady) return adx.localeCompare(ady);
+      return String(a.biz_name||a.business_name||'').localeCompare(String(b.biz_name||b.business_name||''));
     });
 
   if (!due.length){
     showBanner('No due stops for that run date.');
+    return;
   }
 
   const existing = state.assignments.filter(a => a.service_date === runISO);
@@ -1280,6 +1362,7 @@ async function generateRunAssignments(){
       id: ex?.id, // keep id if present
       order_id: o.id,
       service_date: runISO,
+      operator_id: o.route_operator_id || ex?.operator_id || null,
       stop_order: (ex?.stop_order != null) ? Number(ex.stop_order) : nextStop++
     });
   }
@@ -1287,6 +1370,7 @@ async function generateRunAssignments(){
   const { error } = await supabaseClient.from('assignments').upsert(upserts, { onConflict: 'order_id,service_date' });
   if (error){
     showBanner(fmtSbError(error));
+    return;
   }
   await refreshAll(false);
   renderSchedule();
@@ -1358,6 +1442,7 @@ function printSchedulePDF(){
           ${rows.map(a=>{
             const o = orderById.get(a.order_id) || {};
             const op = a.operator_id ? (opsById.get(a.operator_id) || {}) : {};
+            return `<tr>
               <td>${escapeHtml(String(a.stop_order||''))}</td>
               <td>${escapeHtml(op.name||'Unassigned')}</td>
               <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
@@ -1441,6 +1526,7 @@ async function scheduleOrder(orderId){
 
   if (!state.operators.length){
     alert('Add an operator first (Operators tab).');
+    return;
   }
 
   const opNameList = state.operators.map(o=>`${o.name} (${o.id})`).join('\n');
@@ -1489,6 +1575,7 @@ function renderOperators(){
   if (!state.operators.length){
     list.innerHTML = `<div class="muted">No operators yet. Click “Add operator”.</div>`;
     editor.innerHTML = `<div class="muted">Select an operator…</div>`;
+    return;
   }
 
   state.operators.forEach(o => {
@@ -1608,6 +1695,7 @@ function ensureMap(){
   const shadowUrl = 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png';
   L.Icon.Default.mergeOptions({ iconRetinaUrl, iconUrl, shadowUrl });
 
+  return map;
 }
 
 async function renderMap(){
@@ -1636,6 +1724,7 @@ async function renderMap(){
     if (c === 'monthly') return getCssVar('--brand2') || '#ffb020';
     if (c === 'weekly') return '#a78bfa';
     if (c === 'one-time') return '#9ca3af';
+    return '#9099a8';
   };
 
   const points = [];
@@ -1684,6 +1773,7 @@ async function renderMap(){
   if (!points.length){
     if (empty) empty.style.display = 'grid';
     state.map.setView([39.1, -94.58], 10);
+    return;
   }
   if (empty) empty.style.display = 'none';
 
@@ -1693,7 +1783,9 @@ async function renderMap(){
 
 function getCssVar(name){
   try{
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }catch(e){
+    return '';
   }
 }
 function clearMapLayers(){
@@ -1708,10 +1800,12 @@ async function geocodeMissingOrders(limit=15){
 
   const missing = state.orders.filter(o => {
     const lat = Number(o.lat), lng = Number(o.lng);
+    return (!Number.isFinite(lat) || !Number.isFinite(lng)) && o.address;
   }).slice(0, limit);
 
   if (!missing.length){
     showBanner('No orders missing coordinates.');
+    return;
   }
 
   let updated = 0;
@@ -1740,7 +1834,9 @@ async function geocodeAddress(address){
     if (!Array.isArray(j) || !j[0]) return null;
     const lat = Number(j[0].lat), lng = Number(j[0].lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng };
   } catch(_){
+    return null;
   }
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1755,10 +1851,149 @@ function hideBanner(){ showBanner(''); }
 
 /* ========= HTML escape ========= */
 function escapeHtml(str){
+  return String(str ?? '')
     .replaceAll('&','&amp;')
     .replaceAll('<','&lt;')
     .replaceAll('>','&gt;')
     .replaceAll('"','&quot;')
     .replaceAll("'","&#039;");
 }
-})();
+
+async function loadRoutes(){
+  state.routes = [];
+  if (!state.supportsRoutes) return;
+  const { data, error } = await sb.from('routes')
+    .select('id,name,service_day,status,target_cans,operator_id,created_at')
+    .order('created_at', { ascending:false });
+  if (error) { console.warn('loadRoutes', error); return; }
+  state.routes = data || [];
+}
+
+function renderRoutes(){
+  const list = document.getElementById('routesList');
+  if (!list) return;
+  list.innerHTML = '';
+  const routes = state.routes || [];
+  if (!routes.length){
+    list.innerHTML = '<div class="muted">No routes yet. Click New Route.</div>';
+    return;
+  }
+  for (const r of routes){
+    const div = document.createElement('div');
+    div.className = 'row';
+    div.style.cursor='pointer';
+    div.innerHTML = `
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+        <div>
+          <div style="font-weight:700;">${escapeHtml(r.name || '(Unnamed Route)')}</div>
+          <div class="muted">${escapeHtml(r.service_day||'')} • ${escapeHtml(r.status||'draft')}</div>
+        </div>
+        <div class="chip">${(r.target_cans||'') ? `${r.target_cans} cans` : ''}</div>
+      </div>`;
+    div.addEventListener('click', ()=>{
+      state.selectedRouteId = r.id;
+      renderRouteDetails();
+    });
+    list.appendChild(div);
+  }
+}
+
+function renderRouteDetails(){
+  const empty = document.getElementById('routeDetailsEmpty');
+  const wrap = document.getElementById('routeDetails');
+  if (!empty || !wrap) return;
+  const rid = state.selectedRouteId;
+  const r = (state.routes||[]).find(x=>x.id===rid);
+  if (!r){
+    empty.style.display='block';
+    wrap.style.display='none';
+    return;
+  }
+  empty.style.display='none';
+  wrap.style.display='block';
+
+  document.getElementById('routeName').value = r.name || '';
+  document.getElementById('routeServiceDay').value = r.service_day || 'Monday';
+  document.getElementById('routeStatus').value = r.status || 'draft';
+  document.getElementById('routeTargetCans').value = r.target_cans || '';
+
+  // Operator dropdown
+  const sel = document.getElementById('routeOperator');
+  if (sel){
+    sel.innerHTML = '<option value="">(unassigned)</option>' + (state.operators||[]).map(o=>`<option value="${o.id}">${escapeHtml(o.name||o.full_name||o.email||o.id)}</option>`).join('');
+    sel.value = r.operator_id || '';
+  }
+
+  // List orders in route
+  const ro = document.getElementById('routeOrders');
+  if (ro){
+    const orders = (state.orders||[]).filter(o=>o.route_id===rid);
+    if (!orders.length){
+      ro.innerHTML = '<div class="muted">No orders assigned to this route yet.</div>';
+    } else {
+      ro.innerHTML = orders.map(o=>`
+        <div class="row">
+          <div style="display:flex;justify-content:space-between;gap:12px;">
+            <div>
+              <div style="font-weight:700;">${escapeHtml(o.business_name||o.name||'Order')}</div>
+              <div class="muted">${escapeHtml(o.address||o.location||'')}</div>
+            </div>
+            <div class="muted">${escapeHtml(o.service_frequency||o.frequency||'')}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+}
+
+async function createRoute(){
+  if (!state.supportsRoutes) return toast('Routes schema not enabled', 'warn');
+  const payload = {
+    name: 'New Route',
+    service_day: 'Monday',
+    cadence: 'biweekly',
+    status: 'draft',
+    target_cans: 15
+  };
+  const { data, error } = await sb.from('routes').insert(payload).select('*').single();
+  if (error) return toast(fmtSbError(error), 'warn');
+  await loadRoutes();
+  state.selectedRouteId = data.id;
+  renderRoutes();
+  renderRouteDetails();
+  toast('Route created', 'ok');
+}
+
+async function saveRoute(){
+  const rid = state.selectedRouteId;
+  if (!rid) return;
+  const payload = {
+    name: document.getElementById('routeName').value.trim(),
+    service_day: document.getElementById('routeServiceDay').value,
+    status: document.getElementById('routeStatus').value,
+    target_cans: Number(document.getElementById('routeTargetCans').value||0) || null,
+    operator_id: document.getElementById('routeOperator').value || null
+  };
+  const { error } = await sb.from('routes').update(payload).eq('id', rid);
+  if (error) return toast(fmtSbError(error), 'warn');
+  await loadRoutes();
+  renderRoutes();
+  renderRouteDetails();
+  toast('Route saved', 'ok');
+}
+
+async function deleteRoute(){
+  const rid = state.selectedRouteId;
+  if (!rid) return;
+  // Unassign orders first to avoid FK issues if your schema uses FK
+  if (state.supportsOrdersRouteId){
+    await sb.from('orders').update({ route_id: null }).eq('route_id', rid);
+  }
+  const { error } = await sb.from('routes').delete().eq('id', rid);
+  if (error) return toast(fmtSbError(error), 'warn');
+  state.selectedRouteId = null;
+  await loadRoutes();
+  renderRoutes();
+  renderRouteDetails();
+  toast('Route deleted', 'ok');
+}

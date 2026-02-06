@@ -203,7 +203,91 @@
       </section>
 
       <!-- ORDERS -->
-      <section class="view" id="ordersView" style="display:none;">
+      
+    <section id="routesView" class="view">
+      <div class="viewHeader">
+        <div>
+          <h2>Routes</h2>
+          <div class="muted">Build routes first, then assign an operator. Orders attach to routes.</div>
+        </div>
+        <div class="viewActions">
+          <button id="btnNewRoute" class="btn primary">New Route</button>
+        </div>
+      </div>
+
+      <div id="routesSchemaNotice" class="notice warn" style="display:none;">
+        Routes schema not detected in Supabase. Run the SQL in the README to enable route-first routing.
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="cardHeader">
+            <h3>Route List</h3>
+            <div class="muted">Draft → Ready → Active</div>
+          </div>
+          <div class="cardBody">
+            <div id="routesList" class="list"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHeader">
+            <h3>Route Details</h3>
+            <div class="muted">Assign operator at route level</div>
+          </div>
+          <div class="cardBody">
+            <div id="routeDetailsEmpty" class="muted">Select a route to view details.</div>
+            <div id="routeDetails" style="display:none;">
+              <div class="formRow">
+                <label>Route Name</label>
+                <input id="routeName" type="text" />
+              </div>
+              <div class="formRow">
+                <label>Service Day</label>
+                <select id="routeServiceDay">
+                  <option value="Monday">Monday</option>
+                  <option value="Tuesday">Tuesday</option>
+                  <option value="Wednesday">Wednesday</option>
+                  <option value="Thursday">Thursday</option>
+                  <option value="Friday">Friday</option>
+                  <option value="Saturday">Saturday</option>
+                  <option value="Sunday">Sunday</option>
+                </select>
+              </div>
+              <div class="formRow">
+                <label>Status</label>
+                <select id="routeStatus">
+                  <option value="draft">draft</option>
+                  <option value="ready">ready</option>
+                  <option value="active">active</option>
+                </select>
+              </div>
+              <div class="formRow">
+                <label>Target Cans</label>
+                <input id="routeTargetCans" type="number" min="1" step="1" />
+              </div>
+              <div class="formRow">
+                <label>Operator</label>
+                <select id="routeOperator"></select>
+              </div>
+              <div class="formRow">
+                <button id="btnSaveRoute" class="btn primary">Save Route</button>
+                <button id="btnDeleteRoute" class="btn danger">Delete Route</button>
+              </div>
+
+              <hr class="sep"/>
+
+              <div class="cardSubheader">
+                <h4>Orders in this route</h4>
+                <div class="muted">Assign orders from Orders/Home using the Route dropdown.</div>
+              </div>
+              <div id="routeOrders" class="list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+<section class="view" id="ordersView" style="display:none;">
         <div class="card">
           <div class="card-head">
             <div>
