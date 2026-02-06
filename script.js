@@ -884,15 +884,14 @@ function renderHomeOrdersInbox(){
   html.push(`</tbody></table>`);
   wrap.innerHTML = html.join('');
 
-  // Row click: jump to Orders tab and focus this order
+  // Row click: jump to Schedule and focus this order in the day-assignment board
+  // (Do NOT stuff UUIDs into search inputs.)
   wrap.querySelectorAll('tr.clickable').forEach(tr=>{
     tr.addEventListener('click', ()=>{
       const id = tr.dataset.orderId;
-      switchView('ordersView');
-      if ($('ordersSearch')){
-        $('ordersSearch').value = id || '';
-        renderOrders();
-      }
+      if (id) sessionStorage.setItem('focus_order_id', id);
+      switchView('scheduleView');
+      renderSchedule();
     });
   });
 }
@@ -1112,13 +1111,19 @@ function renderSchedule(){
 
 async function saveOrderSchedule(orderId, patch){
   try{
+    // Guard against accidentally passing an object/stringified JSON instead of a UUID
+    const idStr = String(orderId || '');
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRe.test(idStr)){
+      showBanner('Could not save: invalid order id (selection bug).');
+      return false;
+    }
     const clean = sanitizeSchedulePatch(patch);
     const { data, error } = await supabaseClient
       .from('orders')
       .update(clean)
-      .eq('id', orderId)
-      .select('*')
-      .single();
+      .eq('id', idStr)
+      .select('*');
 
     if (error){
       showBanner(fmtSbError(error));
@@ -1126,8 +1131,9 @@ async function saveOrderSchedule(orderId, patch){
     }
 
     // Update local cache from returned row (source of truth)
-    const idx = state.orders.findIndex(o => o.id === orderId);
-    if (idx >= 0 && data) state.orders[idx] = data;
+    const row = Array.isArray(data) ? data[0] : data;
+    const idx = state.orders.findIndex(o => String(o.id) === idStr);
+    if (idx >= 0 && row) state.orders[idx] = row;
 
     hideBanner();
     return true;
@@ -1140,6 +1146,9 @@ async function saveOrderSchedule(orderId, patch){
 function renderDayAssignBoard(){
   const board = $('dayAssignBoard');
   if (!board) return;
+
+  // Optional: focus a single order when coming from Home
+  const focusId = sessionStorage.getItem('focus_order_id') || '';
 
   const ops = state.operators || [];
   const dayOptions = [
@@ -1154,9 +1163,11 @@ function renderDayAssignBoard(){
   ];
 
   // Show only relevant orders (ignore cancelled)
-  const visible = state.orders
+  const visibleAll = state.orders
     .filter(o => !['cancelled'].includes(String(o.status||'').toLowerCase()))
     .slice(0, 500);
+
+  const visible = focusId ? visibleAll.filter(o => String(o.id) === String(focusId)) : visibleAll;
 
   board.innerHTML = '';
   const table = document.createElement('div');
@@ -1186,6 +1197,7 @@ function renderDayAssignBoard(){
       const row = document.createElement('div');
       row.className = 'schedule-row';
       row.dataset.orderId = o.id;
+      if (focusId && String(o.id) === String(focusId)) row.classList.add('focused');
 
       const sdVal = (o.service_day != null) ? String(o.service_day) : '';
       const startVal = o.route_start_date ? String(o.route_start_date).slice(0,10) : '';
@@ -1258,6 +1270,13 @@ function renderDayAssignBoard(){
   }
 
   board.appendChild(table);
+
+  // Scroll focus row into view once rendered, then clear focus so the view returns to normal next time
+  if (focusId){
+    const el = board.querySelector(`.schedule-row.focused`);
+    if (el) el.scrollIntoView({ behavior:'smooth', block:'center' });
+    sessionStorage.removeItem('focus_order_id');
+  }
 }
 
 async function generateRunAssignments(){
