@@ -1847,13 +1847,6 @@ function weekStartMonday(date){
   return d;
 }
 
-function toISODate(d){
-  const x = new Date(d);
-  const y = x.getFullYear();
-  const m = String(x.getMonth()+1).padStart(2,'0');
-  const da = String(x.getDate()).padStart(2,'0');
-  return `${y}-${m}-${da}`;
-}
 
 function buildRoutesWeekFilter(){
   const sel = document.getElementById('routesWeekFilter');
