@@ -71,3 +71,45 @@ ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS last_service_date date,           -- updated when a job is completed
   ADD COLUMN IF NOT EXISTS route_operator_id uuid;           -- preferred operator for this route/order
 
+
+
+-- 5) ROUTE-FIRST: routes table + orders.route_id
+CREATE TABLE IF NOT EXISTS public.routes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  name text NOT NULL,
+  service_day text,
+  status text NOT NULL DEFAULT 'draft', -- draft|ready|active|completed
+  target_cans integer,
+  operator_id uuid
+);
+
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS route_id uuid;
+
+-- Optional FK (safe if you want referential integrity)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'orders_route_id_fkey'
+  ) THEN
+    ALTER TABLE public.orders
+      ADD CONSTRAINT orders_route_id_fkey
+      FOREIGN KEY (route_id) REFERENCES public.routes(id)
+      ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_orders_route_id ON public.orders(route_id);
+
+ALTER TABLE public.routes ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='routes' AND policyname='routes_authed_all') THEN
+    CREATE POLICY routes_authed_all ON public.routes
+      FOR ALL USING (auth.role() = 'authenticated')
+      WITH CHECK (auth.role() = 'authenticated');
+  END IF;
+END $$;

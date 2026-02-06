@@ -174,13 +174,16 @@
 </div>
 </div>
 <div class="notice warn" id="routesSchemaNotice" style="display:none;">
-        Routes schema not detected in Supabase. Run the SQL in the README to enable route-first routing.
+        Routes schema not detected in Supabase. Run the SQL in supabase-schema.sql to enable route-first routing.
       </div>
 <div class="grid2">
 <div class="card">
 <div class="cardHeader">
 <h3>Route List</h3>
 <div class="muted">Draft → Ready → Active</div>
+  <div class="filters">
+    <select id="routesWeekFilter"></select>
+  </div>
 </div>
 <div class="cardBody">
 <div class="list" id="routesList"></div>

@@ -253,6 +253,7 @@ const state = {
   supportsOrdersRouteId: false,
   selectedRouteId: null,
   routes: [],
+  routesWeek: 'all',
 
   view: 'homeView',
   weekStart: startOfWeek(new Date()),
@@ -1835,6 +1836,46 @@ function escapeHtml(str){
     .replaceAll("'","&#039;");
 }
 
+
+function weekStartMonday(date){
+  // Returns a Date at Monday 00:00 local time for the week containing `date`.
+  const d = new Date(date);
+  d.setHours(0,0,0,0);
+  const day = d.getDay(); // 0=Sun..6=Sat
+  const diff = (day === 0 ? -6 : 1 - day); // shift to Monday
+  d.setDate(d.getDate() + diff);
+  return d;
+}
+
+function toISODate(d){
+  const x = new Date(d);
+  const y = x.getFullYear();
+  const m = String(x.getMonth()+1).padStart(2,'0');
+  const da = String(x.getDate()).padStart(2,'0');
+  return `${y}-${m}-${da}`;
+}
+
+function buildRoutesWeekFilter(){
+  const sel = document.getElementById('routesWeekFilter');
+  if (!sel) return;
+  const routes = state.routes || [];
+  const weeks = new Map(); // iso -> label
+  for (const r of routes){
+    if (!r.created_at) continue;
+    const ws = toISODate(weekStartMonday(new Date(r.created_at)));
+    if (!weeks.has(ws)) weeks.set(ws, ws);
+  }
+  const opts = Array.from(weeks.keys()).sort().reverse();
+  const current = state.routesWeek || 'all';
+  sel.innerHTML = `<option value="all">All weeks</option>` + opts.map(w=>`<option value="${w}">Week of ${w}</option>`).join('');
+  sel.value = opts.includes(current) ? current : 'all';
+  state.routesWeek = sel.value;
+  sel.onchange = ()=>{
+    state.routesWeek = sel.value;
+    renderRoutes();
+  };
+}
+
 async function loadRoutes(){
   state.routes = [];
   if (!state.supportsRoutes) return;
@@ -1843,13 +1884,25 @@ async function loadRoutes(){
     .order('created_at', { ascending:false });
   if (error) { console.warn('loadRoutes', error); return; }
   state.routes = data || [];
+  buildRoutesWeekFilter();
 }
 
 function renderRoutes(){
   const list = document.getElementById('routesList');
   if (!list) return;
   list.innerHTML = '';
-  const routes = state.routes || [];
+  let routes = state.routes || [];
+  // Week filter (by created_at week, Monday start)
+  const wk = state.routesWeek || 'all';
+  if (wk !== 'all'){
+    const start = weekStartMonday(new Date(wk));
+    const end = new Date(start); end.setDate(end.getDate()+7);
+    routes = routes.filter(r=>{
+      if (!r.created_at) return false;
+      const c = new Date(r.created_at);
+      return c >= start && c < end;
+    });
+  }
   if (!routes.length){
     list.innerHTML = '<div class="muted">No routes yet. Click New Route.</div>';
     return;
