@@ -317,7 +317,11 @@ function wireUI(){
   });
 
   on('btnRefresh', 'click', async () => { await refreshAll(true); });
-  on('btnAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); });
+  on('scheduleRoute','change', () => renderSchedule());
+  on('scheduleRunDate','change', () => renderSchedule());
+  on('btnGenerateRun','click', async () => { await renderSchedule(); });
+  on('btnPrintSchedule','click', () => window.print());
+  // on('btnAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); });
 
   on('btnAutoAssign2', 'click', async () => { await autoAssignCurrentWeek(); switchView('scheduleView'); });
   on('btnGeocode2', 'click', async () => { await geocodeMissingOrders(15); await renderMap(); });
@@ -424,11 +428,16 @@ function switchView(viewId){
     scheduleView: ['Schedule', 'Weekly dispatch built from Intake orders'],
     mapView: ['Map', 'All intake orders on the map (hover for details)'],
     ordersView: ['Orders', 'Intake orders + status'],
+    routesView: ['Routes', 'Build routes first, then assign an operator'],
     operatorsView: ['Operators', 'Manage payouts & capacity'],
   };
   const t = titles[viewId] || ['ProCan', ''];
   $('pageTitle').textContent = t[0];
   $('pageSub').textContent = t[1];
+
+  if (viewId === 'scheduleView'){
+    setTimeout(() => { populateRouteSelects(); renderSchedule(); }, 10);
+  }
 
   if (viewId === 'mapView'){
     setTimeout(() => {

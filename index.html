@@ -1,339 +1,292 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ProCan J.A.I.D.A — Ops Console</title>
-  <link rel="stylesheet" href="./styles.css?v=20260129-1" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="icon" href="data:,">
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ProCan J.A.I.D.A — Ops Console</title>
+<link href="./styles.css?v=20260129-1" rel="stylesheet"/>
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+<link href="data:," rel="icon"/>
 </head>
 <body>
-
-  <!-- Startup -->
-  <div class="startup-overlay" id="startupOverlay" aria-hidden="true">
-    <div class="startup-logo">ProCan J.A.I.D.A</div>
-    <div class="startup-text">Initializing ops console…</div>
-    <div class="startup-spinner" aria-hidden="true"></div>
-  </div>
-
-  <!-- AUTH -->
-  <div class="auth-gate" id="authGate" style="display:none;">
-    <div class="auth-card">
-      <div class="auth-brand">ProCan J.A.I.D.A</div>
-      <div class="auth-sub">Secure login</div>
-
-      <label class="field">
-        <span>Email</span>
-        <input id="authEmail" type="email" placeholder="you@procan.com" autocomplete="email" />
-      </label>
-
-      <label class="field">
-        <span>Password</span>
-        <input id="authPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
-      </label>
-
-      <div class="auth-actions">
-        <button class="btn primary" id="btnLogin">Login</button>
-        <button class="btn ghost" id="btnMagic">Send magic link</button>
-      </div>
-
-      <div class="auth-msg" id="authMsg"></div>
-      <div class="auth-foot">Authorized staff only</div>
-    </div>
-  </div>
-
-  <!-- APP SHELL -->
-  <div class="app" id="app" style="display:none;">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-title">ProCan J.A.I.D.A</div>
-        <div class="brand-sub">Dispatch • Routes • Payouts</div>
-      </div>
-
-      <nav class="nav">
-        <button class="nav-item active" data-view="homeView">Home</button>
-        <button class="nav-item" data-view="scheduleView">Schedule</button>
-        <button class="nav-item" data-view="mapView">Map</button>
-        <button class="nav-item" data-view="ordersView">Orders</button>
-        <button class="nav-item" data-view="operatorsView">Operators</button>
-      </nav>
-
-      <div class="sidebar-foot">
-        <div class="pill" id="signedInPill">Signed in</div>
-        <button class="btn outline" id="btnLogout">Logout</button>
-      </div>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <div class="page-title" id="pageTitle">Home</div>
-          <div class="page-sub" id="pageSub">At-a-glance ops overview</div>
-        </div>
-
-        <div class="topbar-actions">
-          <div class="datebox">
-            <label>Week</label>
-            <input type="date" id="weekPicker" />
-          </div>
-          <button class="btn ghost" id="btnRefresh">Refresh</button>
-          <button class="btn primary" id="btnAutoAssign">Generate schedule</button>
-        </div>
-      </header>
-
-      <div class="banner warn" id="banner" style="display:none;"></div>
-
-      <!-- HOME -->
-      <section class="view" id="homeView">
-        <div class="grid kpis">
-          <div class="card kpi">
-            <div class="kpi-label">This week gross</div>
-            <div class="kpi-value" id="kpiGross">$0</div>
-            <div class="kpi-sub" id="kpiGrossSub">From scheduled work</div>
-          </div>
-          <div class="card kpi">
-            <div class="kpi-label">This week profit</div>
-            <div class="kpi-value" id="kpiProfit">$0</div>
-            <div class="kpi-sub">Gross − operator payouts</div>
-          </div>
-          <div class="card kpi">
-            <div class="kpi-label">Jobs this week</div>
-            <div class="kpi-value" id="kpiJobs">0</div>
-            <div class="kpi-sub">Scheduled assignments</div>
-          </div>
-          <div class="card kpi">
-            <div class="kpi-label">Operator payouts</div>
-            <div class="kpi-value" id="kpiPayouts">$0</div>
-            <div class="kpi-sub">Due end of pay period</div>
-          </div>
-        </div>
-
-        <div class="grid home-grid">
-          <div class="card">
-            <div class="card-head">
-              <div>
-                <div class="card-title">Intake orders</div>
-                <div class="card-sub">All orders from the Intake form (grouped by cadence • area • age to help build routes)</div>
-              </div>
-              <div class="filters">
-                <select id="homeCadence"></select>
-                <select id="homeAge"></select>
-                <input id="homeSearch" type="search" placeholder="Search business / address…" />
-                <button class="btn ghost" id="btnGoOrdersHome">Open full orders</button>
-              </div>
-            </div>
-            <div class="chips" id="homeGroupChips"></div>
-            <div class="table" id="homeOrdersTable"></div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <div>
-                <div class="card-title">Soonest available</div>
-                <div class="card-sub">Quick availability check for mid-sale</div>
-              </div>
-              <button class="btn ghost" id="btnGoSchedule2">Open schedule</button>
-            </div>
-            <div class="divider"></div>
-            <div class="workload">
-              <div class="workload-title">Next open service day</div>
-              <div class="kpi-value" id="nextAvailable">—</div>
-              <div class="kpi-sub" id="nextAvailableSub">Based on current scheduled workload</div>
-              <div class="divider"></div>
-              <div class="workload-title">Weekly workload</div>
-              <div class="workload-bar"><div class="workload-fill" id="workloadFill"></div></div>
-              <div class="workload-sub" id="workloadSub">—</div>
-            </div>
-          </div>
-        </div>
-
-      </section>
-
+<!-- Startup -->
+<div aria-hidden="true" class="startup-overlay" id="startupOverlay">
+<div class="startup-logo">ProCan J.A.I.D.A</div>
+<div class="startup-text">Initializing ops console…</div>
+<div aria-hidden="true" class="startup-spinner"></div>
+</div>
+<!-- AUTH -->
+<div class="auth-gate" id="authGate" style="display:none;">
+<div class="auth-card">
+<div class="auth-brand">ProCan J.A.I.D.A</div>
+<div class="auth-sub">Secure login</div>
+<label class="field">
+<span>Email</span>
+<input autocomplete="email" id="authEmail" placeholder="you@procan.com" type="email"/>
+</label>
+<label class="field">
+<span>Password</span>
+<input autocomplete="current-password" id="authPassword" placeholder="••••••••" type="password"/>
+</label>
+<div class="auth-actions">
+<button class="btn primary" id="btnLogin">Login</button>
+<button class="btn ghost" id="btnMagic">Send magic link</button>
+</div>
+<div class="auth-msg" id="authMsg"></div>
+<div class="auth-foot">Authorized staff only</div>
+</div>
+</div>
+<!-- APP SHELL -->
+<div class="app" id="app" style="display:none;">
+<aside class="sidebar">
+<div class="brand">
+<div class="brand-title">ProCan J.A.I.D.A</div>
+<div class="brand-sub">Dispatch • Routes • Payouts</div>
+</div>
+<nav class="nav">
+<button class="nav-item active" data-view="homeView">Home</button>
+<button class="nav-item" data-view="scheduleView">Schedule</button>
+<button class="nav-item" data-view="mapView">Map</button>
+<button class="nav-item" data-view="routesView">Routes</button>
+<button class="nav-item" data-view="ordersView">Orders</button>
+<button class="nav-item" data-view="operatorsView">Operators</button>
+</nav>
+<div class="sidebar-foot">
+<div class="pill" id="signedInPill">Signed in</div>
+<button class="btn outline" id="btnLogout">Logout</button>
+</div>
+</aside>
+<main class="main">
+<header class="topbar">
+<div>
+<div class="page-title" id="pageTitle">Home</div>
+<div class="page-sub" id="pageSub">At-a-glance ops overview</div>
+</div>
+<div class="topbar-actions">
+<div class="datebox">
+<label>Week</label>
+<input id="weekPicker" type="date"/>
+</div>
+<button class="btn ghost" id="btnRefresh">Refresh</button>
+</div>
+</header>
+<div class="banner warn" id="banner" style="display:none;"></div>
+<!-- HOME -->
+<section class="view" id="homeView">
+<div class="grid kpis">
+<div class="card kpi">
+<div class="kpi-label">This week gross</div>
+<div class="kpi-value" id="kpiGross">$0</div>
+<div class="kpi-sub" id="kpiGrossSub">From scheduled work</div>
+</div>
+<div class="card kpi">
+<div class="kpi-label">This week profit</div>
+<div class="kpi-value" id="kpiProfit">$0</div>
+<div class="kpi-sub">Gross − operator payouts</div>
+</div>
+<div class="card kpi">
+<div class="kpi-label">Jobs this week</div>
+<div class="kpi-value" id="kpiJobs">0</div>
+<div class="kpi-sub">Scheduled assignments</div>
+</div>
+<div class="card kpi">
+<div class="kpi-label">Operator payouts</div>
+<div class="kpi-value" id="kpiPayouts">$0</div>
+<div class="kpi-sub">Due end of pay period</div>
+</div>
+</div>
+<div class="grid home-grid">
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Intake orders</div>
+<div class="card-sub">All orders from the Intake form (grouped by cadence • area • age to help build routes)</div>
+</div>
+<div class="filters">
+<select id="homeCadence"></select>
+<select id="homeAge"></select>
+<input id="homeSearch" placeholder="Search business / address…" type="search"/>
+<button class="btn ghost" id="btnGoOrdersHome">Open full orders</button>
+</div>
+</div>
+<div class="chips" id="homeGroupChips"></div>
+<div class="table" id="homeOrdersTable"></div>
+</div>
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Soonest available</div>
+<div class="card-sub">Quick availability check for mid-sale</div>
+</div>
+<button class="btn ghost" id="btnGoSchedule2">Open schedule</button>
+</div>
+<div class="divider"></div>
+<div class="workload">
+<div class="workload-title">Next open service day</div>
+<div class="kpi-value" id="nextAvailable">—</div>
+<div class="kpi-sub" id="nextAvailableSub">Based on current scheduled workload</div>
+<div class="divider"></div>
+<div class="workload-title">Weekly workload</div>
+<div class="workload-bar"><div class="workload-fill" id="workloadFill"></div></div>
+<div class="workload-sub" id="workloadSub">—</div>
+</div>
+</div>
+</div>
+</section>
 <!-- SCHEDULE -->
-      <section class="view" id="scheduleView" style="display:none;">
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Schedule</div>
-              <div class="card-sub">Route day planning + run sheet. Assign service days, then generate the next run list.</div>
-            </div>
-            <div class="filters">
-              
-<select id="scheduleDay"></select>
-<input type="date" id="scheduleRunDate" />
-<button class="btn outline" id="btnGenerateRun">Generate run list</button>
-<button class="btn ghost" id="btnPrintSchedule">Print PDF</button>
+<section class="view" id="scheduleView" style="display:none;">
+
+</section>
+<!-- MAP -->
+<section class="view" id="mapView" style="display:none;">
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Orders map</div>
+<div class="card-sub">All intake orders shown as location markers.</div>
 </div>
-          </div>
-          <div class="schedule" id="scheduleBoard"></div>
-        
-          <div class="divider" style="margin-top:16px;"></div>
-          <div class="card-sub" style="margin-top:12px;">Assign a fixed service day to each order (this is your route day). Once assigned, the run sheet above will show who is due on the selected run date.</div>
-          <div class="schedule" id="dayAssignBoard"></div>
+<div class="filters">
+<select id="mapCadence"></select>
+<select id="mapStatus"></select>
+<button class="btn ghost" id="btnGeocodeMissing">Geocode missing</button>
 </div>
-      </section>
-
-      <!-- MAP -->
-      <section class="view" id="mapView" style="display:none;">
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Orders map</div>
-              <div class="card-sub">All intake orders shown as location markers.</div>
-            </div>
-            <div class="filters">
-              <select id="mapCadence"></select>
-              <select id="mapStatus"></select>
-              <button class="btn ghost" id="btnGeocodeMissing">Geocode missing</button>
-            </div>
-          </div>
-          <div class="map-wrap">
-            <div id="map"></div>
-            <div class="map-empty" id="mapEmpty" style="display:none;">
-              <div class="map-empty-title">No mappable orders yet</div>
-              <div class="map-empty-sub">Geocode missing addresses to view all intake orders on the map.</div>
-              <div class="map-empty-actions">
-                <button class="btn primary" id="btnGoOrdersMap">Open orders</button>
-                <button class="btn ghost" id="btnGeocode2">Geocode missing</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ORDERS -->
-      
-    <section id="routesView" class="view">
-      <div class="viewHeader">
-        <div>
-          <h2>Routes</h2>
-          <div class="muted">Build routes first, then assign an operator. Orders attach to routes.</div>
-        </div>
-        <div class="viewActions">
-          <button id="btnNewRoute" class="btn primary">New Route</button>
-        </div>
-      </div>
-
-      <div id="routesSchemaNotice" class="notice warn" style="display:none;">
+</div>
+<div class="map-wrap">
+<div id="map"></div>
+<div class="map-empty" id="mapEmpty" style="display:none;">
+<div class="map-empty-title">No mappable orders yet</div>
+<div class="map-empty-sub">Geocode missing addresses to view all intake orders on the map.</div>
+<div class="map-empty-actions">
+<button class="btn primary" id="btnGoOrdersMap">Open orders</button>
+<button class="btn ghost" id="btnGeocode2">Geocode missing</button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- ORDERS -->
+<section class="view" id="routesView" style="display:none;">
+<div class="viewHeader">
+<div>
+<h2>Routes</h2>
+<div class="muted">Build routes first, then assign an operator. Orders attach to routes.</div>
+</div>
+<div class="viewActions">
+<button class="btn primary" id="btnNewRoute">New Route</button>
+</div>
+</div>
+<div class="notice warn" id="routesSchemaNotice" style="display:none;">
         Routes schema not detected in Supabase. Run the SQL in the README to enable route-first routing.
       </div>
-
-      <div class="grid2">
-        <div class="card">
-          <div class="cardHeader">
-            <h3>Route List</h3>
-            <div class="muted">Draft → Ready → Active</div>
-          </div>
-          <div class="cardBody">
-            <div id="routesList" class="list"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="cardHeader">
-            <h3>Route Details</h3>
-            <div class="muted">Assign operator at route level</div>
-          </div>
-          <div class="cardBody">
-            <div id="routeDetailsEmpty" class="muted">Select a route to view details.</div>
-            <div id="routeDetails" style="display:none;">
-              <div class="formRow">
-                <label>Route Name</label>
-                <input id="routeName" type="text" />
-              </div>
-              <div class="formRow">
-                <label>Service Day</label>
-                <select id="routeServiceDay">
-                  <option value="Monday">Monday</option>
-                  <option value="Tuesday">Tuesday</option>
-                  <option value="Wednesday">Wednesday</option>
-                  <option value="Thursday">Thursday</option>
-                  <option value="Friday">Friday</option>
-                  <option value="Saturday">Saturday</option>
-                  <option value="Sunday">Sunday</option>
-                </select>
-              </div>
-              <div class="formRow">
-                <label>Status</label>
-                <select id="routeStatus">
-                  <option value="draft">draft</option>
-                  <option value="ready">ready</option>
-                  <option value="active">active</option>
-                </select>
-              </div>
-              <div class="formRow">
-                <label>Target Cans</label>
-                <input id="routeTargetCans" type="number" min="1" step="1" />
-              </div>
-              <div class="formRow">
-                <label>Operator</label>
-                <select id="routeOperator"></select>
-              </div>
-              <div class="formRow">
-                <button id="btnSaveRoute" class="btn primary">Save Route</button>
-                <button id="btnDeleteRoute" class="btn danger">Delete Route</button>
-              </div>
-
-              <hr class="sep"/>
-
-              <div class="cardSubheader">
-                <h4>Orders in this route</h4>
-                <div class="muted">Assign orders from Orders/Home using the Route dropdown.</div>
-              </div>
-              <div id="routeOrders" class="list"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+<div class="grid2">
+<div class="card">
+<div class="cardHeader">
+<h3>Route List</h3>
+<div class="muted">Draft → Ready → Active</div>
+</div>
+<div class="cardBody">
+<div class="list" id="routesList"></div>
+</div>
+</div>
+<div class="card">
+<div class="cardHeader">
+<h3>Route Details</h3>
+<div class="muted">Assign operator at route level</div>
+</div>
+<div class="cardBody">
+<div class="muted" id="routeDetailsEmpty">Select a route to view details.</div>
+<div id="routeDetails" style="display:none;">
+<div class="formRow">
+<label>Route Name</label>
+<input id="routeName" type="text"/>
+</div>
+<div class="formRow">
+<label>Service Day</label>
+<select id="routeServiceDay">
+<option value="Monday">Monday</option>
+<option value="Tuesday">Tuesday</option>
+<option value="Wednesday">Wednesday</option>
+<option value="Thursday">Thursday</option>
+<option value="Friday">Friday</option>
+<option value="Saturday">Saturday</option>
+<option value="Sunday">Sunday</option>
+</select>
+</div>
+<div class="formRow">
+<label>Status</label>
+<select id="routeStatus">
+<option value="draft">draft</option>
+<option value="ready">ready</option>
+<option value="active">active</option>
+</select>
+</div>
+<div class="formRow">
+<label>Target Cans</label>
+<input id="routeTargetCans" min="1" step="1" type="number"/>
+</div>
+<div class="formRow">
+<label>Operator</label>
+<select id="routeOperator"></select>
+</div>
+<div class="formRow">
+<button class="btn primary" id="btnSaveRoute">Save Route</button>
+<button class="btn danger" id="btnDeleteRoute">Delete Route</button>
+</div>
+<hr class="sep"/>
+<div class="cardSubheader">
+<h4>Orders in this route</h4>
+<div class="muted">Assign orders from Orders/Home using the Route dropdown.</div>
+</div>
+<div class="list" id="routeOrders"></div>
+</div>
+</div>
+</div>
+</div>
+</section>
 <section class="view" id="ordersView" style="display:none;">
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Orders</div>
-              <div class="card-sub">Incoming orders from Intake form (auto scheduled).</div>
-            </div>
-            <div class="filters">
-              <select id="ordersStatus"></select>
-              <input id="ordersSearch" type="search" placeholder="Search business / address…" />
-              <button class="btn ghost" id="btnBulkAutoAssign">Generate schedule</button>
-            </div>
-          </div>
-          <div class="table" id="ordersTable"></div>
-        </div>
-      </section>
-
-      <!-- OPERATORS -->
-      <section class="view" id="operatorsView" style="display:none;">
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Operators</div>
-              <div class="card-sub">Manage payouts & capacity.</div>
-            </div>
-            <button class="btn primary" id="btnAddOperator">Add operator</button>
-          </div>
-
-          <div class="grid three">
-            <div class="card inner">
-              <div class="card-title-sm">Operators</div>
-              <div class="list" id="operatorsList"></div>
-            </div>
-            <div class="card inner">
-              <div class="card-title-sm">Edit</div>
-              <div id="operatorEditor" class="muted">Select an operator…</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-    </main>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
-  <script src="./supabase-config.js?v=20260129-1"></script>
-  <script src="./script.js?v=20260129-1"></script>
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Orders</div>
+<div class="card-sub">Incoming orders from Intake form (auto scheduled).</div>
+</div>
+<div class="filters">
+<select id="ordersStatus"></select>
+<input id="ordersSearch" placeholder="Search business / address…" type="search"/>
+<button class="btn ghost" id="btnBulkAutoAssign">Generate schedule</button>
+</div>
+</div>
+<div class="table" id="ordersTable"></div>
+</div>
+</section>
+<!-- OPERATORS -->
+<section class="view" id="operatorsView" style="display:none;">
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Operators</div>
+<div class="card-sub">Manage payouts &amp; capacity.</div>
+</div>
+<button class="btn primary" id="btnAddOperator">Add operator</button>
+</div>
+<div class="grid three">
+<div class="card inner">
+<div class="card-title-sm">Operators</div>
+<div class="list" id="operatorsList"></div>
+</div>
+<div class="card inner">
+<div class="card-title-sm">Edit</div>
+<div class="muted" id="operatorEditor">Select an operator…</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="./supabase-config.js?v=20260129-1"></script>
+<script src="./script.js?v=20260129-1"></script>
 </body>
 </html>
