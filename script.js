@@ -23,8 +23,12 @@ const sanitizeSchedulePatch = (patch) => {
     out.service_day = (v === '' || v == null) ? null : Number(v);
   }
   if ('route_operator_id' in out){
-    const v = out.route_operator_id;
-    out.route_operator_id = (v === '' || v == null) ? null : String(v);
+    if (state && state.supportsRouteOperatorId === false){
+      delete out.route_operator_id;
+    } else {
+      const v = out.route_operator_id;
+      out.route_operator_id = (v === '' || v == null) ? null : String(v);
+    }
   }
   if ('route_start_date' in out){
     const v = out.route_start_date;
@@ -227,6 +231,7 @@ const state = {
   weekStart: startOfWeek(new Date()),
   operators: [],
   orders: [],
+  supportsRouteOperatorId: true,
   assignments: [],
   payoutMode: "percent", // "percent" (30) or "fraction" (0.30)
   map: null,
@@ -453,6 +458,10 @@ async function refreshAll(showBannerOnErrors){
   } catch(e) { state.payoutMode = 'percent'; }
 
   state.orders = ordRes.data || [];
+  // Detect whether orders table supports route_operator_id (some DBs may not have this column yet)
+  try {
+    state.supportsRouteOperatorId = (state.orders.length > 0) ? Object.prototype.hasOwnProperty.call(state.orders[0], 'route_operator_id') : state.supportsRouteOperatorId;
+  } catch(e) {}
   state.assignments = asnRes.data || [];
 
   buildOperatorColors();
@@ -1208,7 +1217,13 @@ function renderDayAssignBoard(){
       opSel.style.height = '34px';
       opSel.append(new Option('Unassigned',''));
       ops.forEach(op => opSel.append(new Option(op.name, op.id)));
-      opSel.value = o.route_operator_id || '';
+      if (state.supportsRouteOperatorId){
+        opSel.value = o.route_operator_id || '';
+      } else {
+        opSel.value = '';
+        opSel.disabled = true;
+        opSel.title = "Operator preference column missing in Supabase orders table. Add route_operator_id (uuid) to enable per-order operator selection.";
+      }
 
       const daySel = document.createElement('select');
       daySel.className = 'input';
@@ -1250,7 +1265,7 @@ function renderDayAssignBoard(){
         const patch = {};
         patch.service_day = daySel.value === '' ? null : Number(daySel.value);
         patch.route_start_date = startInput.value ? startInput.value : null;
-        patch.route_operator_id = opSel.value || null;
+        if (state.supportsRouteOperatorId) patch.route_operator_id = opSel.value || null;
         return patch;
       };
 
