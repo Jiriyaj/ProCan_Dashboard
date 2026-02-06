@@ -2,11 +2,11 @@
 async function probeSchema(){
   // Detect if routes table + orders.route_id exist. Safe: if not, we just disable route-first UI.
   try{
-    const r = await sb.from('routes').select('id,name,service_day,status,target_cans,operator_id').limit(1);
+    const r = await supabaseClient.from('routes').select('id,name,service_day,status,target_cans,operator_id').limit(1);
     if (!r.error) state.supportsRoutes = true;
   }catch(e){}
   try{
-    const o = await sb.from('orders').select('id,route_id').limit(1);
+    const o = await supabaseClient.from('orders').select('id,route_id').limit(1);
     if (!o.error){
       state.supportsOrdersRouteId = true;
     }
@@ -1872,7 +1872,7 @@ function buildRoutesWeekFilter(){
 async function loadRoutes(){
   state.routes = [];
   if (!state.supportsRoutes) return;
-  const { data, error } = await sb.from('routes')
+  const { data, error } = await supabaseClient.from('routes')
     .select('id,name,service_day,status,target_cans,operator_id,created_at')
     .order('created_at', { ascending:false });
   if (error) { console.warn('loadRoutes', error); return; }
@@ -2034,7 +2034,7 @@ async function addSelectedOrdersToRoute(){
   const orderIds = boxes.map(b=>b.dataset.orderId).filter(Boolean);
   if (!orderIds.length) return toast('Select at least one order', 'warn');
 
-  const { error } = await sb.from('orders').update({ route_id: rid }).in('id', orderIds);
+  const { error } = await supabaseClient.from('orders').update({ route_id: rid }).in('id', orderIds);
   if (error) return toast(fmtSbError(error), 'warn');
 
   await refreshAll(false);
@@ -2101,7 +2101,7 @@ async function autoGroupOrdersIntoRoutes(opts = {}){
         target_cans: orders.length,
         operator_id: null
       };
-      const ins = await sb.from('routes').insert(payload).select('*').single();
+      const ins = await supabaseClient.from('routes').insert(payload).select('*').single();
       if (ins.error){
         console.warn('autoGroup route insert', ins.error);
         continue;
@@ -2110,7 +2110,7 @@ async function autoGroupOrdersIntoRoutes(opts = {}){
     }
 
     const orderIds = orders.map(o=>o.id);
-    const up = await sb.from('orders').update({ route_id: route.id }).in('id', orderIds);
+    const up = await supabaseClient.from('orders').update({ route_id: route.id }).in('id', orderIds);
     if (up.error) console.warn('autoGroup order update', up.error);
   }
 
@@ -2160,7 +2160,7 @@ async function createRoute(){
     target_cans: 15,
     operator_id: null
   };
-  const { data, error } = await sb.from('routes').insert(payload).select('*').single();
+  const { data, error } = await supabaseClient.from('routes').insert(payload).select('*').single();
   if (error) return toast(fmtSbError(error), 'warn');
   await loadRoutes();
   state.selectedRouteId = data.id;
@@ -2179,7 +2179,7 @@ async function saveRoute(){
     target_cans: Number(document.getElementById('routeTargetCans').value||0) || null,
     operator_id: document.getElementById('routeOperator').value || null
   };
-  const { error } = await sb.from('routes').update(payload).eq('id', rid);
+  const { error } = await supabaseClient.from('routes').update(payload).eq('id', rid);
   if (error) return toast(fmtSbError(error), 'warn');
   await loadRoutes();
   renderRoutes();
@@ -2192,9 +2192,9 @@ async function deleteRoute(){
   if (!rid) return;
   // Unassign orders first to avoid FK issues if your schema uses FK
   if (state.supportsOrdersRouteId){
-    await sb.from('orders').update({ route_id: null }).eq('route_id', rid);
+    await supabaseClient.from('orders').update({ route_id: null }).eq('route_id', rid);
   }
-  const { error } = await sb.from('routes').delete().eq('id', rid);
+  const { error } = await supabaseClient.from('routes').delete().eq('id', rid);
   if (error) return toast(fmtSbError(error), 'warn');
   state.selectedRouteId = null;
   await loadRoutes();
