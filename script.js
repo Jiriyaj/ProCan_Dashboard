@@ -1,3 +1,6 @@
+
+(function(){
+'use strict';
 // ROUTE-FIRST MODEL ENABLED
 // Orders attach to routes. Operators attach to routes.
 
@@ -1758,3 +1761,4 @@ function escapeHtml(str){
     .replaceAll('"','&quot;')
     .replaceAll("'","&#039;");
 }
+})();
