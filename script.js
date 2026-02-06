@@ -6,6 +6,44 @@ const fmtMoney = (n) => {
   const v = Number(n || 0);
   return v.toLocaleString('en-US', { style:'currency', currency:'USD' });
 };
+const payoutToPercent = (v) => {
+  const n = Number(v);
+  if (!isFinite(n)) return 30;
+  return (state?.payoutMode === 'fraction') ? (n * 100) : n;
+};
+const payoutFromPercent = (p) => {
+  const n = Number(p);
+  if (!isFinite(n)) return 30;
+  return (state?.payoutMode === 'fraction') ? (n / 100) : n;
+};
+const sanitizeSchedulePatch = (patch) => {
+  const out = { ...patch };
+  if ('service_day' in out){
+    const v = out.service_day;
+    out.service_day = (v === '' || v == null) ? null : Number(v);
+  }
+  if ('route_operator_id' in out){
+    const v = out.route_operator_id;
+    out.route_operator_id = (v === '' || v == null) ? null : String(v);
+  }
+  if ('route_start_date' in out){
+    const v = out.route_start_date;
+    out.route_start_date = (v === '' || v == null) ? null : String(v);
+  }
+  if ('last_service_date' in out){
+    const v = out.last_service_date;
+    out.last_service_date = (v === '' || v == null) ? null : String(v);
+  }
+  if ('is_deposit' in out) out.is_deposit = !!out.is_deposit;
+  return out;
+};
+
+const fmtSbError = (error) => {
+  if (!error) return 'Unknown error';
+  const parts = [error.message, error.details, error.hint, error.code].filter(Boolean);
+  return parts.join(' • ');
+};
+
 const toISODate = (d) => new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
 const parseISO = (s) => {
   const m = String(s||'').trim();
@@ -185,6 +223,7 @@ const state = {
   operators: [],
   orders: [],
   assignments: [],
+  payoutMode: "percent", // "percent" (30) or "fraction" (0.30)
   map: null,
   mapLayers: { markers: [], lines: [] },
   operatorColors: {}, // id -> color
@@ -401,6 +440,13 @@ async function refreshAll(showBannerOnErrors){
   }
 
   state.operators = opsRes.data || [];
+  // Detect whether payout_rate is stored as percent (30) or fraction (0.30)
+  try {
+    const rates = (state.operators || []).map(o => Number(o.payout_rate)).filter(n => isFinite(n));
+    const max = rates.length ? Math.max(...rates) : 30;
+    state.payoutMode = (max <= 1) ? 'fraction' : 'percent';
+  } catch(e) { state.payoutMode = 'percent'; }
+
   state.orders = ordRes.data || [];
   state.assignments = asnRes.data || [];
 
@@ -1056,8 +1102,8 @@ function renderSchedule(){
 
 async function saveOrderSchedule(orderId, patch){
   try{
-    const { error } = await supabaseClient.from('orders').update(patch).eq('id', orderId);
-    if (error) showBanner(error.message);
+    const { error } = await supabaseClient.from('orders').update(sanitizeSchedulePatch(patch)).eq('id', orderId);
+    if (error) showBanner(fmtSbError(error));
     // optimistic local update
     const idx = state.orders.findIndex(o => o.id === orderId);
     if (idx >= 0) state.orders[idx] = { ...state.orders[idx], ...patch };
@@ -1232,7 +1278,7 @@ async function generateRunAssignments(){
 
   const { error } = await supabaseClient.from('assignments').upsert(upserts, { onConflict: 'order_id,service_date' });
   if (error){
-    showBanner(error.message);
+    showBanner(fmtSbError(error));
     return;
   }
   await refreshAll(false);
@@ -1242,7 +1288,7 @@ async function generateRunAssignments(){
 async function deleteAssignment(id){
   if (!confirm('Delete this scheduled job?')) return;
   const { error } = await supabaseClient.from('assignments').delete().eq('id', id);
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
   await refreshAll(false);
 }
 
@@ -1252,7 +1298,7 @@ async function editAssignment(id){
   const newDate = prompt('Service date (YYYY-MM-DD):', a.service_date);
   if (!newDate) return;
   const { error } = await supabaseClient.from('assignments').update({ service_date: newDate }).eq('id', id);
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
   await refreshAll(false);
 }
 
@@ -1265,7 +1311,7 @@ ${options}`, a.operator_id || 'unassigned');
   if (!newOp) return;
   const opId = newOp === 'unassigned' ? null : newOp;
   const { error } = await supabaseClient.from('assignments').update({ operator_id: opId }).eq('id', id);
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
   await refreshAll(false);
 }
 
@@ -1398,7 +1444,7 @@ async function scheduleOrder(orderId){
 
   const payload = { order_id: orderId, operator_id: opIdRaw, service_date: date, stop_order: 0 };
   const { error } = await supabaseClient.from('assignments').upsert(payload, { onConflict: 'order_id,service_date' });
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
 
   await refreshAll(false);
   switchView('scheduleView');
@@ -1412,7 +1458,7 @@ async function updateOrderStatus(orderId){
   if (!next) return;
 
   const { error } = await supabaseClient.from('orders').update({ status: next }).eq('id', orderId);
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
 
   await refreshAll(false);
 }
@@ -1420,7 +1466,7 @@ async function updateOrderStatus(orderId){
 async function deleteOrder(orderId){
   if (!confirm('Delete this order? This cannot be undone.')) return;
   const { error } = await supabaseClient.from('orders').delete().eq('id', orderId);
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
   await refreshAll(false);
 }
 
@@ -1485,7 +1531,7 @@ function selectOperator(opId){
     </label>
     <label class="field">
       <span>Payout rate (%)</span>
-      <input id="opRate" type="number" step="0.1" value="${escapeHtml(String(o.payout_rate ?? 30))}" />
+      <input id="opRate" type="number" step="0.1" value="${escapeHtml(String(payoutToPercent(o.payout_rate ?? 30))) }" />
     </label>
     <label class="field">
       <span>Active</span>
@@ -1507,8 +1553,8 @@ function selectOperator(opId){
     const name = editor.querySelector('#opName')?.value?.trim();
     const rate = Number(editor.querySelector('#opRate')?.value || 30);
     const active = editor.querySelector('#opActive')?.value === 'true';
-    const { error } = await supabaseClient.from('operators').update({ name, payout_rate: rate, active }).eq('id', o.id);
-    if (error) return showBanner(error.message);
+    const { error } = await supabaseClient.from('operators').update({ name, payout_rate: payoutFromPercent(rate), active }).eq('id', o.id);
+    if (error) return showBanner(fmtSbError(error));
     await refreshAll(false);
   });
 }
@@ -1517,8 +1563,8 @@ async function addOperator(){
   const name = prompt('Operator name:');
   if (!name) return;
   const rate = Number(prompt('Payout rate (%):', '30') || 30);
-  const { error } = await supabaseClient.from('operators').insert({ name, payout_rate: rate, active: true });
-  if (error) return showBanner(error.message);
+  const { error } = await supabaseClient.from('operators').insert({ name, payout_rate: payoutFromPercent(rate), active: true });
+  if (error) return showBanner(fmtSbError(error));
   await refreshAll(false);
   // select the newest
   selectedOperatorId = state.operators[state.operators.length-1]?.id || null;
@@ -1529,7 +1575,7 @@ async function deleteOperator(opId){
   if (!o) return;
   if (!confirm(`Remove operator "${o.name}"?`)) return;
   const { error } = await supabaseClient.from('operators').delete().eq('id', opId);
-  if (error) return showBanner(error.message);
+  if (error) return showBanner(fmtSbError(error));
   if (selectedOperatorId === opId) selectedOperatorId = null;
   await refreshAll(false);
 }
