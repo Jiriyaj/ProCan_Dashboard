@@ -180,45 +180,46 @@ function orderHasAnyAssignment(orderId){
   return state.assignments.some(a => a.order_id === orderId);
 }
 
-function stageLabelForOrder(order, assignedSet){
-  const st = String(order?.status || 'new').toLowerCase();
-  const hasAsn = assignedSet ? assignedSet.has(order.id) : orderHasAnyAssignment(order.id);
+function stageLabelForOrder(order){
+  // ROUTE-FIRST STATUS (no editable status):
+  // 1) Deposited (paid) → 2) On route (route_id set) → 3) Route active (route.status === 'active')
+  const st = String(order?.status || order?.payment_status || '').toLowerCase();
 
-  // Explicit deposit flag from Intake/Webhook (preferred).
-  const isDeposit =
-    order?.is_deposit === true ||
-    String(order?.is_deposit || '').toLowerCase() === 'true' ||
-    order?.deposit === true ||
-    String(order?.deposit || '').toLowerCase() === 'true' ||
-    order?.deposit_only === true ||
-    String(order?.deposit_only || '').toLowerCase() === 'true' ||
-    String(order?.billing_type || '').toLowerCase() === 'deposit' ||
-    String(order?.billing || '').toLowerCase().includes('deposit');
+  const deposited =
+    st === 'paid' || st === 'succeeded' || st === 'success' ||
+    String(order?.stripe_payment_status||'').toLowerCase() === 'paid' ||
+    String(order?.stripe_status||'').toLowerCase() === 'paid' ||
+    order?.is_deposit === true || String(order?.is_deposit||'').toLowerCase() === 'true';
 
-  if (st === 'cancelled') return 'cancelled';
-  if (st === 'completed') return 'completed';
+  const rid = order?.route_id || null;
+  const route = rid ? (state.routes||[]).find(r=>r.id===rid) : null;
+  const routeActive = route && String(route.status||'').toLowerCase() === 'active';
 
-  // Before an assignment record exists (run not generated yet)
-  if (!hasAsn){
-    const hasRouteConfig = (order?.service_day != null && String(order?.service_day) !== '') && !!order?.route_start_date;
+  if (routeActive) return 'route active';
+  if (rid) return 'on route';
+  if (deposited) return 'deposited';
+  return 'needs deposit';
+}
 
-    if (isDeposit){
-      if (st === 'paid' && hasRouteConfig) return 'activated (deposit)';
-      if (st === 'paid') return 'reserved (deposit)';
-      if (st === 'new') return 'deposit pending';
-      return st || 'deposit pending';
-    }
 
-    // Non-deposit orders
-    if (st === 'paid' && hasRouteConfig) return 'scheduled (configured)';
-    if (st === 'paid') return 'ready to schedule';
-    if (st === 'new') return 'awaiting payment';
-    return st;
-  }
+function renderOperatorNameForOrder(order){
+  const rid = order?.route_id || null;
+  if (!rid) return '—';
+  const route = (state.routes||[]).find(r=>r.id===rid);
+  if (!route || !route.operator_id) return '—';
+  const op = (state.operators||[]).find(o=>o.id===route.operator_id);
+  return op?.name || op?.full_name || op?.email || '—';
+}
 
-  // After route activation: assignments exist.
-  if (st === 'paid') return 'scheduled';
-  return st;
+function renderRouteChipForOrder(order){
+  const rid = order?.route_id || null;
+  if (!rid) return '<span class="muted">—</span>';
+  const route = (state.routes||[]).find(r=>r.id===rid);
+  if (!route) return '<span class="muted">—</span>';
+  const status = String(route.status||'draft');
+  const name = route.name || 'Route';
+  const cls = status==='active' ? 'badge ok' : (status==='ready' ? 'badge amber' : 'badge');
+  return `<span class="${cls}"><span class="dot"></span>${escapeHtml(name)} • ${escapeHtml(status)}</span>`;
 }
 
 /* ========= DOM ========= */
@@ -316,15 +317,20 @@ function wireUI(){
     await supabaseClient.auth.signOut();
   });
 
+  // Routes (route-first)
+  on('btnNewRoute','click', async ()=>{ await createRoute(); });
+  on('btnSaveRoute','click', async ()=>{ await saveRoute(); });
+  on('btnDeleteRoute','click', async ()=>{ await deleteRoute(); });
+  on('btnAutoGroupRoutes','click', async ()=>{ await autoGroupOrdersIntoRoutes(); });
+  on('btnAddSelectedToRoute','click', async ()=>{ await addSelectedOrdersToRoute(); });
+  on('routeAddSearch','input', ()=>{ renderRouteAddList(); });
+
   on('btnRefresh', 'click', async () => { await refreshAll(true); });
   on('scheduleRoute','change', () => renderSchedule());
   on('scheduleRunDate','change', () => renderSchedule());
   on('btnGenerateRun','click', async () => { await renderSchedule(); });
   on('btnPrintSchedule','click', () => window.print());
-  // on('btnAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); });
-
-  on('btnAutoAssign2', 'click', async () => { await autoAssignCurrentWeek(); switchView('scheduleView'); });
-  on('btnGeocode2', 'click', async () => { await geocodeMissingOrders(15); await renderMap(); });
+  // on('btnAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); });  on('btnGeocode2', 'click', async () => { await geocodeMissingOrders(15); await renderMap(); });
   on('btnGoOrdersMap', 'click', () => switchView('ordersView'));
 
   on('btnGeocodeMissing', 'click', async () => {
@@ -334,8 +340,8 @@ function wireUI(){
   });
 
   // NOTE: btnGoSchedule was removed from the simplified Home; keep wiring optional.
-  on('btnGoSchedule', 'click', () => switchView('scheduleView'));
-  on('btnGoSchedule2', 'click', () => switchView('scheduleView'));
+  on('btnGoRoute', 'click', () => switchView('routesView'));
+  on('btnGoRoute2', 'click', () => switchView('routesView'));
 
   // week picker default
   const wp = $('weekPicker');
@@ -376,7 +382,7 @@ function wireUI(){
   on('btnGoOrdersHome', 'click', () => switchView('ordersView'));
   on('btnPrintSchedule', 'click', () => printSchedulePDF());
   on('btnGoOrders', 'click', () => switchView('ordersView'));
-  on('btnBulkAutoAssign', 'click', async () => { await autoAssignCurrentWeek(); await refreshAll(false); });
+  on('btnAutoGroupRoutesFromOrders', 'click', async () => { await autoGroupOrdersIntoRoutes(); switchView('routesView'); });
   on('btnAddOperator', 'click', async () => { await addOperator(); });
 
 }
@@ -424,9 +430,7 @@ function switchView(viewId){
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === viewId));
 
   const titles = {
-    homeView: ['Home', 'At-a-glance ops overview'],
-    scheduleView: ['Schedule', 'Weekly dispatch built from Intake orders'],
-    mapView: ['Map', 'All intake orders on the map (hover for details)'],
+    homeView: ['Home', 'At-a-glance ops overview'],    mapView: ['Map', 'All intake orders on the map (hover for details)'],
     ordersView: ['Orders', 'Intake orders + status'],
     routesView: ['Routes', 'Build routes first, then assign an operator'],
     operatorsView: ['Operators', 'Manage payouts & capacity'],
@@ -434,10 +438,6 @@ function switchView(viewId){
   const t = titles[viewId] || ['ProCan', ''];
   $('pageTitle').textContent = t[0];
   $('pageSub').textContent = t[1];
-
-  if (viewId === 'scheduleView'){
-    setTimeout(() => { populateRouteSelects(); renderSchedule(); }, 10);
-  }
 
   if (viewId === 'mapView'){
     setTimeout(() => {
@@ -499,13 +499,18 @@ async function refreshAll(showBannerOnErrors){
   } catch(e) {}
   state.assignments = asnRes.data || [];
 
+
+  await probeSchema();
+  await loadRoutes();
+
   buildOperatorColors();
   hydrateFilters();
 
   renderHome();
-  renderSchedule();
   renderOrders();
   renderOperators();
+  renderRoutes();
+  renderRouteDetails();
 
   if (state.view === 'mapView') renderMap();
 }
@@ -562,14 +567,20 @@ function hydrateFilters(){
     el.value = current;
   };
 
-  // Orders page status
+  // Orders page status (route-first)
   const status = $('ordersStatus');
   if (status){
+    const current = status.value || 'all';
     status.innerHTML='';
-    ['All','new','paid','scheduled','completed','cancelled'].forEach(s=>{
-      const val = s==='All' ? 'all' : s;
-      status.append(new Option(s==='All'?'All statuses':s, val));
-    });
+    const opts = [
+      ['All statuses','all'],
+      ['deposited','deposited'],
+      ['on route','on route'],
+      ['route active','route active'],
+      ['needs deposit','needs deposit'],
+    ];
+    for (const [label,val] of opts) status.append(new Option(label,val));
+    status.value = current;
   }
 
   // Home filters
@@ -720,58 +731,57 @@ async function autoAssignCurrentWeek(){
 
 /* ========= Home ========= */
 function renderHome(){
-  const weekStartISO = toISODate(state.weekStart);
-  const weekEndISO = toISODate(addDays(state.weekStart,6));
-  const orderById = new Map(state.orders.map(o => [o.id, o]));
-  const opsById = new Map(state.operators.map(o => [o.id, o]));
+  const orderById = new Map((state.orders||[]).map(o => [o.id, o]));
+  const opsById = new Map((state.operators||[]).map(o => [o.id, o]));
 
-  const weekAsn = state.assignments.filter(a => a.service_date >= weekStartISO && a.service_date <= weekEndISO);
+  // ROUTE-FIRST KPIs (based on active routes)
+  const activeRoutes = (state.routes||[]).filter(r => String(r.status||'').toLowerCase() === 'active');
 
-  // KPI calculations (based on scheduled work)
-  let weekGross = 0;
-  let weekPayouts = 0;
-  const weekOrderSet = new Set();
+  let gross = 0;
+  let payouts = 0;
+  let jobs = 0;
+  const unique = new Set();
 
-  for (const a of weekAsn){
-    weekOrderSet.add(a.order_id);
-    const ord = orderById.get(a.order_id);
-    if (!ord) continue;
+  for (const r of activeRoutes){
+    const routeOrders = (state.orders||[]).filter(o => o.route_id === r.id);
+    for (const ord of routeOrders){
+      unique.add(ord.id);
+      jobs += 1;
+      const amt = Number(ord.monthly_total || ord.due_today || 0);
+      gross += amt;
 
-    const amt = Number(ord.monthly_total || ord.due_today || 0);
-    weekGross += amt;
-
-    const op = opsById.get(a.operator_id);
-    const rate = Number(op?.payout_rate ?? 30) / 100;
-    weekPayouts += amt * rate;
+      const op = r.operator_id ? (opsById.get(r.operator_id) || null) : null;
+      const rate = (op ? payoutToPercent(op.payout_rate) : 30) / 100;
+      payouts += amt * rate;
+    }
   }
 
-  const weekProfit = Math.max(0, weekGross - weekPayouts);
+  const profit = Math.max(0, gross - payouts);
 
-  $('kpiGross').textContent = fmtMoney(weekGross);
-  $('kpiProfit').textContent = fmtMoney(weekProfit);
-  $('kpiJobs').textContent = String(weekAsn.length);
-  $('kpiPayouts').textContent = fmtMoney(weekPayouts);
+  $('kpiGross').textContent = fmtMoney(gross);
+  $('kpiProfit').textContent = fmtMoney(profit);
+  $('kpiJobs').textContent = String(jobs);
+  $('kpiPayouts').textContent = fmtMoney(payouts);
 
-  // KPI hovers (fix: consistent hover behavior)
-  attachKpiHover($('kpiGross')?.closest('.kpi'), `Profit: ${fmtMoney(weekProfit)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
-  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Gross: ${fmtMoney(weekGross)}  •  Payouts: ${fmtMoney(weekPayouts)}`);
-  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Unique clients: ${weekOrderSet.size}`);
+  attachKpiHover($('kpiGross')?.closest('.kpi'), `Profit: ${fmtMoney(profit)}  •  Payouts: ${fmtMoney(payouts)}`);
+  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Gross: ${fmtMoney(gross)}  •  Payouts: ${fmtMoney(payouts)}`);
+  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Active routes: ${activeRoutes.length}  •  Unique clients: ${unique.size}`);
 
-  // Soonest available (simple capacity-based heuristic)
+  // Soonest available (based on active-route load per weekday)
   renderNextAvailable();
 
   // Home orders inbox (grouped)
   renderHomeOrdersInbox();
 
-  // Workload visual (scheduled vs total orders)
+  // Workload visual (active routes vs total orders)
   const fill = $('workloadFill');
   const sub = $('workloadSub');
   if (fill && sub){
-    const total = state.orders.length || 0;
-    const assigned = weekAsn.length;
-    const pct = total ? Math.min(100, Math.round((assigned / total) * 100)) : 0;
+    const total = (state.orders||[]).length || 0;
+    const activeStops = jobs;
+    const pct = total ? Math.min(100, Math.round((activeStops / total) * 100)) : 0;
     fill.style.width = pct + '%';
-    sub.textContent = `${assigned} scheduled this week • ${total} total intake orders`;
+    sub.textContent = `${activeStops} stops on active routes • ${total} total intake orders`;
   }
 }
 
@@ -890,13 +900,11 @@ function renderHomeOrdersInbox(){
   }
 
   const html = [];
-  html.push(`<table><thead><tr>
+    html.push(`<table><thead><tr>
     <th>Business</th>
     <th>Address</th>
     <th>Cadence</th>
-    <th>Deposit</th>
-    <th>Service day</th>
-    <th>Route start</th>
+    <th>Route</th>
     <th>Operator</th>
     <th>Status</th>
   </tr></thead><tbody>`);
@@ -909,7 +917,7 @@ function renderHomeOrdersInbox(){
       html.push(`<tr class="group-row"><td colspan="8">${escapeHtml(label)}</td></tr>`);
       lastKey = r.key;
     }
-    const stage = stageLabelForOrder(o, assignedSet);
+    const stage = stageLabelForOrder(o);
     html.push(`<tr class="clickable" data-order-id="${escapeHtml(o.id)}">
       <td>
         <div class="title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
@@ -917,10 +925,8 @@ function renderHomeOrdersInbox(){
       </td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(r.cad||o.cadence||'')}</td>
-      <td>${((o?.is_deposit===true)||String(o?.is_deposit||'').toLowerCase()==='true') ? '<span class="badge amber"><span class="dot"></span>deposit</span>' : '<span class="badge"><span class="dot"></span>—</span>'}</td>
-      <td>${(o.service_day!=null && String(o.service_day)!=='') ? escapeHtml(dayName(Number(o.service_day))) : '—'}</td>
-      <td>${o.route_start_date ? escapeHtml(String(o.route_start_date).slice(0,10)) : '—'}</td>
-      <td>${o.route_operator_id ? escapeHtml((opsById.get(o.route_operator_id)?.name)||'') : '—'}</td>
+      <td>${renderRouteChipForOrder(o)}</td>
+      <td>${escapeHtml(renderOperatorNameForOrder(o))}</td>
       <td>${escapeHtml(stage)}</td>
     </tr>`);
   }
@@ -928,14 +934,11 @@ function renderHomeOrdersInbox(){
   html.push(`</tbody></table>`);
   wrap.innerHTML = html.join('');
 
-  // Row click: jump to Schedule and focus this order in the day-assignment board
-  // (Do NOT stuff UUIDs into search inputs.)
+  // Row click: jump to Routes and focus this order in the route
   wrap.querySelectorAll('tr.clickable').forEach(tr=>{
-    tr.addEventListener('click', ()=>{
+    tr.addEventListener('click', async ()=>{
       const id = tr.dataset.orderId;
-      if (id) sessionStorage.setItem('focus_order_id', id);
-      switchView('scheduleView');
-      renderSchedule();
+      if (id) await openOrderInRoute(id);
     });
   });
 }
@@ -944,43 +947,45 @@ function renderNextAvailable(){
   const sub = $('nextAvailableSub');
   if (!el) return;
 
-  // Heuristic: total stops per day capacity. Adjust as you learn your market.
+  // Heuristic: total stops per weekday capacity.
   const DAILY_STOP_CAPACITY = 10;
   const LOOKAHEAD_DAYS = 30;
 
-  const today = new Date();
-  today.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
 
-  // Count scheduled stops per day across loaded assignments
-  const counts = {};
-  for (const a of state.assignments){
-    const d = String(a.service_date||'');
-    if (!d) continue;
-    counts[d] = (counts[d]||0) + 1;
+  // Count stops per weekday from active routes (Mon–Fri)
+  const activeRoutes = (state.routes||[]).filter(r => String(r.status||'').toLowerCase() === 'active');
+  const weekdayStops = { 1:0, 2:0, 3:0, 4:0, 5:0 };
+  for (const r of activeRoutes){
+    const day = normalizeDay(r.service_day);
+    if (day == null) continue;
+    if (day === 0 || day === 6) continue;
+    const stops = (state.orders||[]).filter(o => o.route_id === r.id).length;
+    weekdayStops[day] = (weekdayStops[day]||0) + stops;
   }
 
   let chosen = null;
   for (let i=0;i<=LOOKAHEAD_DAYS;i++){
     const d = addDays(today, i);
     const dow = d.getDay();
-    if (dow === 0 || dow === 6) continue; // skip weekend
-    const iso = toISODate(d);
-    const used = counts[iso] || 0;
+    if (dow === 0 || dow === 6) continue;
+    const used = weekdayStops[dow] || 0;
     if (used < DAILY_STOP_CAPACITY){
-      chosen = { iso, used };
+      chosen = { iso: toISODate(d), dow, used };
       break;
     }
   }
 
   if (!chosen){
     el.textContent = 'No openings';
-    if (sub) sub.textContent = `Fully booked for the next ${LOOKAHEAD_DAYS} days (capacity ${DAILY_STOP_CAPACITY}/day)`;
+    if (sub) sub.textContent = `Active routes are at capacity (≈${DAILY_STOP_CAPACITY} stops/day) for the next ${LOOKAHEAD_DAYS} days`;
     return;
   }
 
   el.textContent = chosen.iso;
-  if (sub) sub.textContent = `Booked: ${chosen.used}/${DAILY_STOP_CAPACITY} stops (next ${LOOKAHEAD_DAYS} days)`;
+  if (sub) sub.textContent = `${dayName(chosen.dow)} capacity: ${chosen.used}/${DAILY_STOP_CAPACITY} stops • Based on active routes`;
 }
+
 
 function attachKpiHover(cardEl, text){
   if (!cardEl) return;
@@ -1106,7 +1111,7 @@ function renderSchedule(){
       const a = r.asn;
       const op = a?.operator_id ? (opsById.get(a.operator_id) || {}) : {};
       const stop = (a?.stop_order != null) ? Number(a.stop_order) : '';
-      const stage = stageLabelForOrder(ord, new Set()); // uses explicit is_deposit now
+      const stage = stageLabelForOrder(ord); // uses explicit is_deposit now
 
       const row = document.createElement('div');
       row.className = 'schedule-row';
@@ -1478,7 +1483,7 @@ function renderOrders(){
   const q = String($('ordersSearch')?.value || '').toLowerCase();
 
   let rows = state.orders.slice();
-  if (status !== 'all') rows = rows.filter(o => String(o.status||'new') === status);
+  if (status !== 'all') rows = rows.filter(o => stageLabelForOrder(o) === status);
   if (q) rows = rows.filter(o =>
     String(o.biz_name||o.business_name||'').toLowerCase().includes(q) ||
     String(o.address||'').toLowerCase().includes(q) ||
@@ -1503,10 +1508,9 @@ function renderOrders(){
       <td>${escapeHtml(o.cadence||'')}</td>
       <td>${escapeHtml(o.preferred_service_day||'')}</td>
       <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
-      <td>${escapeHtml(o.status||'new')}</td>
+      <td>${escapeHtml(stageLabelForOrder(o))}</td>
       <td>
-        <button class="btn btn-mini ghost" data-act="schedule">Schedule</button>
-        <button class="btn btn-mini ghost" data-act="status">Status</button>
+        <button class="btn btn-mini ghost" data-act="route">Open route</button>
         <button class="btn btn-mini outline" data-act="delete">Delete</button>
       </td>
     </tr>`);
@@ -1520,47 +1524,10 @@ function renderOrders(){
       const orderId = tr?.dataset.orderId;
       if (!orderId) return;
       const act = btn.dataset.act;
-      if (act === 'schedule') return scheduleOrder(orderId);
-      if (act === 'status') return updateOrderStatus(orderId);
+      if (act === 'route') return openOrderInRoute(orderId);
       if (act === 'delete') return deleteOrder(orderId);
     });
   });
-}
-
-async function scheduleOrder(orderId){
-  const ord = state.orders.find(o => o.id === orderId);
-  if (!ord) return;
-  const date = prompt('Service date (YYYY-MM-DD):', toISODate(state.weekStart));
-  if (!date) return;
-
-  if (!state.operators.length){
-    alert('Add an operator first (Operators tab).');
-    return;
-  }
-
-  const opNameList = state.operators.map(o=>`${o.name} (${o.id})`).join('\n');
-  const opIdRaw = prompt(`Operator id (paste one):\n${opNameList}`, state.operators[0].id);
-  if (!opIdRaw) return;
-
-  const payload = { order_id: orderId, operator_id: opIdRaw, service_date: date, stop_order: 0 };
-  const { error } = await supabaseClient.from('assignments').upsert(payload, { onConflict: 'order_id,service_date' });
-  if (error) return showBanner(fmtSbError(error));
-
-  await refreshAll(false);
-  switchView('scheduleView');
-}
-
-async function updateOrderStatus(orderId){
-  const ord = state.orders.find(o => o.id === orderId);
-  if (!ord) return;
-  const current = String(ord.status||'new');
-  const next = prompt('Set status (new, paid, scheduled, completed, cancelled):', current);
-  if (!next) return;
-
-  const { error } = await supabaseClient.from('orders').update({ status: next }).eq('id', orderId);
-  if (error) return showBanner(fmtSbError(error));
-
-  await refreshAll(false);
 }
 
 async function deleteOrder(orderId){
@@ -1746,7 +1713,7 @@ async function renderMap(){
     const days = ageDaysFrom(ord);
     const bucket = ageBucket(days);
     const zip = zipFromAddress(ord.address||'');
-    const stage = stageLabelForOrder(ord, assignedSet);
+    const stage = stageLabelForOrder(ord);
     const popup = `
       <div style="min-width:240px">
         <div style="font-weight:800; margin-bottom:4px;">${escapeHtml(title)}</div>
@@ -1911,6 +1878,7 @@ function renderRouteDetails(){
   const empty = document.getElementById('routeDetailsEmpty');
   const wrap = document.getElementById('routeDetails');
   if (!empty || !wrap) return;
+
   const rid = state.selectedRouteId;
   const r = (state.routes||[]).find(x=>x.id===rid);
   if (!r){
@@ -1918,6 +1886,7 @@ function renderRouteDetails(){
     wrap.style.display='none';
     return;
   }
+
   empty.style.display='none';
   wrap.style.display='block';
 
@@ -1933,36 +1902,217 @@ function renderRouteDetails(){
     sel.value = r.operator_id || '';
   }
 
-  // List orders in route
+  // List orders in route (stop order = list order)
   const ro = document.getElementById('routeOrders');
   if (ro){
     const orders = (state.orders||[]).filter(o=>o.route_id===rid);
     if (!orders.length){
       ro.innerHTML = '<div class="muted">No orders assigned to this route yet.</div>';
     } else {
-      ro.innerHTML = orders.map(o=>`
-        <div class="row">
-          <div style="display:flex;justify-content:space-between;gap:12px;">
-            <div>
-              <div style="font-weight:700;">${escapeHtml(o.business_name||o.name||'Order')}</div>
-              <div class="muted">${escapeHtml(o.address||o.location||'')}</div>
+      const focusId = sessionStorage.getItem('focus_order_id') || '';
+      ro.innerHTML = orders.map((o, idx)=>{
+        const focus = focusId && String(o.id) === String(focusId);
+        const stop = idx + 1;
+        const cadence = o.cadence || o.service_frequency || o.frequency || '';
+        return `
+          <div class="row ${focus?'highlight':''}" data-order-id="${escapeHtml(o.id)}">
+            <div style="display:flex;justify-content:space-between;gap:12px;">
+              <div>
+                <div style="font-weight:700;">${escapeHtml(stop + '. ' + (o.business_name||o.biz_name||o.name||'Order'))}</div>
+                <div class="muted">${escapeHtml(o.address||o.location||'')}</div>
+              </div>
+              <div class="muted">${escapeHtml(cadence)}</div>
             </div>
-            <div class="muted">${escapeHtml(o.service_frequency||o.frequency||'')}</div>
           </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
+
+      const focusRow = ro.querySelector('.row.highlight');
+      if (focusRow){
+        focusRow.scrollIntoView({ block:'center', behavior:'smooth' });
+      }
     }
   }
+
+  // Refresh "Add orders" list under the editor
+  renderRouteAddList();
 }
+
+
+function renderRouteAddList(){
+  const list = document.getElementById('routeAddList');
+  const rid = state.selectedRouteId;
+  if (!list || !rid) return;
+
+  const q = String(document.getElementById('routeAddSearch')?.value || '').toLowerCase();
+  const unassigned = (state.orders||[])
+    .filter(o => !o.route_id)
+    .filter(o => stageLabelForOrder(o) === 'deposited');
+
+  const filtered = q ? unassigned.filter(o =>
+    String(o.biz_name||o.business_name||o.contact_name||'').toLowerCase().includes(q) ||
+    String(o.address||'').toLowerCase().includes(q) ||
+    String(o.id||'').toLowerCase().includes(q)
+  ) : unassigned;
+
+  if (!filtered.length){
+    list.innerHTML = '<div class="muted">No unassigned deposited orders.</div>';
+    return;
+  }
+
+  const focusId = sessionStorage.getItem('focus_order_id') || '';
+
+  list.innerHTML = filtered.slice(0,400).map(o=>{
+    const name = o.biz_name||o.business_name||o.contact_name||'Order';
+    const addr = o.address || '';
+    const checked = focusId && String(o.id) === String(focusId) ? 'checked' : '';
+    return `
+      <label class="row" style="align-items:flex-start; gap:10px;">
+        <input type="checkbox" class="routeAddChk" data-order-id="${escapeHtml(o.id)}" ${checked}/>
+        <div style="flex:1;">
+          <div style="font-weight:700;">${escapeHtml(name)}</div>
+          <div class="muted">${escapeHtml(addr)}</div>
+        </div>
+        <div class="muted">${escapeHtml(o.cadence||'')}</div>
+      </label>
+    `;
+  }).join('');
+}
+
+async function addSelectedOrdersToRoute(){
+  const rid = state.selectedRouteId;
+  if (!rid) return toast('Select a route first', 'warn');
+  if (!state.supportsOrdersRouteId) return toast('orders.route_id not enabled in Supabase', 'warn');
+
+  const boxes = Array.from(document.querySelectorAll('#routeAddList .routeAddChk:checked'));
+  const orderIds = boxes.map(b=>b.dataset.orderId).filter(Boolean);
+  if (!orderIds.length) return toast('Select at least one order', 'warn');
+
+  const { error } = await sb.from('orders').update({ route_id: rid }).in('id', orderIds);
+  if (error) return toast(fmtSbError(error), 'warn');
+
+  await refreshAll(false);
+  toast('Orders added to route', 'ok');
+}
+
+async function autoGroupOrdersIntoRoutes(opts = {}){
+  if (!state.supportsRoutes || !state.supportsOrdersRouteId){
+    toast('Routes schema not enabled', 'warn');
+    return;
+  }
+
+  const focusOrderId = opts.focusOrderId || null;
+
+  // eligible: deposited + not on a route
+  let eligible = (state.orders||[])
+    .filter(o => stageLabelForOrder(o) === 'deposited')
+    .filter(o => !o.route_id);
+
+  if (focusOrderId){
+    const focus = eligible.find(o=>String(o.id)===String(focusOrderId));
+    if (!focus) return;
+    const cad = normalizeCadence(focus.cadence);
+    const zip = zipFromAddress(focus.address||'');
+    eligible = eligible.filter(o => normalizeCadence(o.cadence)===cad && zipFromAddress(o.address||'')===zip);
+  }
+
+  if (!eligible.length){
+    if (!opts.silent) toast('No unassigned deposited orders to group', 'ok');
+    return;
+  }
+
+  // group key: cadence + zip (fallback to 'nozip')
+  const groups = new Map();
+  for (const o of eligible){
+    const cad = normalizeCadence(o.cadence) || 'unknown';
+    const zip = zipFromAddress(o.address||'') || 'nozip';
+    const key = cad + '|' + zip;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(o);
+  }
+
+  // Ensure routes loaded
+  await loadRoutes();
+
+  for (const [key, orders] of groups.entries()){
+    const [cad, zip] = key.split('|');
+    const routeName = `AUTO • ${cad} • ${zip}`;
+    let route = (state.routes||[]).find(r => String(r.name||'') === routeName && String(r.status||'').toLowerCase() !== 'completed');
+
+    if (!route){
+      // choose most common preferred_service_day among orders, else Monday
+      const counts = {};
+      for (const o of orders){
+        const d = String(o.preferred_service_day||'').trim();
+        if (d) counts[d] = (counts[d]||0)+1;
+      }
+      const chosenDay = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0] || 'Monday';
+
+      const payload = {
+        name: routeName,
+        service_day: chosenDay,
+        status: 'draft',
+        target_cans: orders.length,
+        operator_id: null
+      };
+      const ins = await sb.from('routes').insert(payload).select('*').single();
+      if (ins.error){
+        console.warn('autoGroup route insert', ins.error);
+        continue;
+      }
+      route = ins.data;
+    }
+
+    const orderIds = orders.map(o=>o.id);
+    const up = await sb.from('orders').update({ route_id: route.id }).in('id', orderIds);
+    if (up.error) console.warn('autoGroup order update', up.error);
+  }
+
+  await refreshAll(false);
+  if (!opts.silent) toast('Auto-grouped orders into draft routes', 'ok');
+}
+
+async function openOrderInRoute(orderId){
+  if (!orderId) return;
+  sessionStorage.setItem('focus_order_id', String(orderId));
+
+  // ensure freshest state (especially after an auto-group)
+  await refreshAll(false);
+
+  let ord = (state.orders||[]).find(o=>String(o.id)===String(orderId));
+  if (!ord) return toast('Order not found', 'warn');
+
+  // If unassigned, auto-group its bucket so it lands on a route
+  if (!ord.route_id && state.supportsRoutes && state.supportsOrdersRouteId){
+    await autoGroupOrdersIntoRoutes({ focusOrderId: orderId, silent: true });
+    await refreshAll(false);
+    ord = (state.orders||[]).find(o=>String(o.id)===String(orderId));
+  }
+
+  switchView('routesView');
+
+  if (ord?.route_id){
+    state.selectedRouteId = ord.route_id;
+    renderRoutes();
+    renderRouteDetails();
+  } else {
+    // No route yet → show route list and pre-check it in "Add orders"
+    state.selectedRouteId = null;
+    renderRoutes();
+    renderRouteDetails();
+  }
+}
+
+
 
 async function createRoute(){
   if (!state.supportsRoutes) return toast('Routes schema not enabled', 'warn');
   const payload = {
     name: 'New Route',
     service_day: 'Monday',
-    cadence: 'biweekly',
     status: 'draft',
-    target_cans: 15
+    target_cans: 15,
+    operator_id: null
   };
   const { data, error } = await sb.from('routes').insert(payload).select('*').single();
   if (error) return toast(fmtSbError(error), 'warn');

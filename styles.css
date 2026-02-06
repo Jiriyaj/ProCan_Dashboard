@@ -446,3 +446,7 @@ tr.clickable:hover td{
 .list{display:flex;flex-direction:column;gap:10px;}
 .sep{border:none;border-top:1px solid rgba(255,255,255,.08);margin:14px 0;}
 .cardSubheader{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-top:6px;}
+
+
+/* Route focus highlight */
+.row.highlight{ outline:2px solid rgba(255,255,255,0.35); border-radius:12px; }

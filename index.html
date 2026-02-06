@@ -46,7 +46,6 @@
 </div>
 <nav class="nav">
 <button class="nav-item active" data-view="homeView">Home</button>
-<button class="nav-item" data-view="scheduleView">Schedule</button>
 <button class="nav-item" data-view="mapView">Map</button>
 <button class="nav-item" data-view="routesView">Routes</button>
 <button class="nav-item" data-view="ordersView">Orders</button>
@@ -119,7 +118,7 @@
 <div class="card-title">Soonest available</div>
 <div class="card-sub">Quick availability check for mid-sale</div>
 </div>
-<button class="btn ghost" id="btnGoSchedule2">Open schedule</button>
+<button class="btn ghost" id="btnGoRoute2">Open route</button>
 </div>
 <div class="divider"></div>
 <div class="workload">
@@ -135,9 +134,6 @@
 </div>
 </section>
 <!-- SCHEDULE -->
-<section class="view" id="scheduleView" style="display:none;">
-
-</section>
 <!-- MAP -->
 <section class="view" id="mapView" style="display:none;">
 <div class="card">
@@ -173,6 +169,7 @@
 <div class="muted">Build routes first, then assign an operator. Orders attach to routes.</div>
 </div>
 <div class="viewActions">
+<button class="btn ghost" id="btnAutoGroupRoutes">Auto‑group orders</button>
 <button class="btn primary" id="btnNewRoute">New Route</button>
 </div>
 </div>
@@ -239,6 +236,19 @@
 <div class="muted">Assign orders from Orders/Home using the Route dropdown.</div>
 </div>
 <div class="list" id="routeOrders"></div>
+<hr class="sep"/>
+<div class="cardSubheader">
+  <h4>Add orders</h4>
+  <div class="muted">Select unassigned deposited orders to add to this route.</div>
+</div>
+<div class="formRow">
+  <input id="routeAddSearch" type="search" placeholder="Search unassigned orders…"/>
+</div>
+<div class="list" id="routeAddList"></div>
+<div class="formRow">
+  <button class="btn primary" id="btnAddSelectedToRoute">Add selected to route</button>
+</div>
+
 </div>
 </div>
 </div>
@@ -249,12 +259,12 @@
 <div class="card-head">
 <div>
 <div class="card-title">Orders</div>
-<div class="card-sub">Incoming orders from Intake form (auto scheduled).</div>
+<div class="card-sub">Incoming orders from Intake form (route-first).</div>
 </div>
 <div class="filters">
 <select id="ordersStatus"></select>
 <input id="ordersSearch" placeholder="Search business / address…" type="search"/>
-<button class="btn ghost" id="btnBulkAutoAssign">Generate schedule</button>
+<button class="btn ghost" id="btnAutoGroupRoutesFromOrders">Auto‑group to routes</button>
 </div>
 </div>
 <div class="table" id="ordersTable"></div>
