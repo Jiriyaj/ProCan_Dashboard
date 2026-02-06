@@ -174,14 +174,19 @@ function stageLabelForOrder(order, assignedSet){
   if (st === 'cancelled') return 'cancelled';
   if (st === 'completed') return 'completed';
 
-  // Before route activation: if deposit order, treat paid as reserved deposit.
+  // Before an assignment record exists (run not generated yet)
   if (!hasAsn){
+    const hasRouteConfig = (order?.service_day != null && String(order?.service_day) !== '') && !!order?.route_start_date;
+
     if (isDeposit){
+      if (st === 'paid' && hasRouteConfig) return 'activated (deposit)';
       if (st === 'paid') return 'reserved (deposit)';
       if (st === 'new') return 'deposit pending';
       return st || 'deposit pending';
     }
-    // Non-deposit orders can be scheduled immediately once you know availability.
+
+    // Non-deposit orders
+    if (st === 'paid' && hasRouteConfig) return 'scheduled (configured)';
     if (st === 'paid') return 'ready to schedule';
     if (st === 'new') return 'awaiting payment';
     return st;
@@ -756,6 +761,8 @@ function renderHomeOrdersInbox(){
   const wrap = $('homeOrdersTable');
   if (!wrap) return;
 
+  const opsById = new Map((state.operators||[]).map(op=>[op.id, op]));
+
   const q = String($('homeSearch')?.value || '').toLowerCase();
   const cadFilter = $('homeCadence')?.value || 'all';
   const ageFilter = $('homeAge')?.value || 'all';
@@ -843,10 +850,10 @@ function renderHomeOrdersInbox(){
     <th>Business</th>
     <th>Address</th>
     <th>Cadence</th>
-    <th>ZIP</th>
-    <th>Age</th>
-    <th>Preferred day</th>
-    <th>Monthly</th>
+    <th>Deposit</th>
+    <th>Service day</th>
+    <th>Route start</th>
+    <th>Operator</th>
     <th>Status</th>
   </tr></thead><tbody>`);
 
@@ -860,13 +867,16 @@ function renderHomeOrdersInbox(){
     }
     const stage = stageLabelForOrder(o, assignedSet);
     html.push(`<tr class="clickable" data-order-id="${escapeHtml(o.id)}">
-      <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
+      <td>
+        <div class="title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
+        <div class="sub">${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))} • ${r.days===null?'—':escapeHtml(String(r.days)+'d old')}</div>
+      </td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(r.cad||o.cadence||'')}</td>
-      <td>${escapeHtml(r.zip||'')}</td>
-      <td>${r.days===null?'—':escapeHtml(String(r.days)+'d')}</td>
-      <td>${escapeHtml(o.preferred_service_day||'')}</td>
-      <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
+      <td>${((o?.is_deposit===true)||String(o?.is_deposit||'').toLowerCase()==='true') ? '<span class="badge amber"><span class="dot"></span>deposit</span>' : '<span class="badge"><span class="dot"></span>—</span>'}</td>
+      <td>${(o.service_day!=null && String(o.service_day)!=='') ? escapeHtml(dayName(Number(o.service_day))) : '—'}</td>
+      <td>${o.route_start_date ? escapeHtml(String(o.route_start_date).slice(0,10)) : '—'}</td>
+      <td>${o.route_operator_id ? escapeHtml((opsById.get(o.route_operator_id)?.name)||'') : '—'}</td>
       <td>${escapeHtml(stage)}</td>
     </tr>`);
   }
@@ -1102,13 +1112,28 @@ function renderSchedule(){
 
 async function saveOrderSchedule(orderId, patch){
   try{
-    const { error } = await supabaseClient.from('orders').update(sanitizeSchedulePatch(patch)).eq('id', orderId);
-    if (error) showBanner(fmtSbError(error));
-    // optimistic local update
+    const clean = sanitizeSchedulePatch(patch);
+    const { data, error } = await supabaseClient
+      .from('orders')
+      .update(clean)
+      .eq('id', orderId)
+      .select('*')
+      .single();
+
+    if (error){
+      showBanner(fmtSbError(error));
+      return false;
+    }
+
+    // Update local cache from returned row (source of truth)
     const idx = state.orders.findIndex(o => o.id === orderId);
-    if (idx >= 0) state.orders[idx] = { ...state.orders[idx], ...patch };
+    if (idx >= 0 && data) state.orders[idx] = data;
+
+    hideBanner();
+    return true;
   } catch (e){
     showBanner(String(e?.message || e));
+    return false;
   }
 }
 
@@ -1218,8 +1243,14 @@ function renderDayAssignBoard(){
       };
 
       saveBtn.addEventListener('click', async ()=>{
-        await saveOrderSchedule(o.id, gatherPatch());
+        const ok = await saveOrderSchedule(o.id, gatherPatch());
+        if (!ok) return;
+        // pull latest data so Home/Orders reflect updates immediately
+        await refreshAll(false);
+        // keep user on schedule view, but refresh relevant panels
         renderSchedule();
+        renderHome();
+        renderOrders();
       });
 
       table.appendChild(row);
