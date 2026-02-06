@@ -25,12 +25,8 @@ const sanitizeSchedulePatch = (patch) => {
     const v = out.service_day;
     out.service_day = (v === '' || v == null) ? null : Number(v);
   }
-  if ('/* route_operator_id (moved to routes) */' in out){
     if (state && state.supportsRouteOperatorId === false){
-      delete out./* route_operator_id (moved to routes) */;
     } else {
-      const v = out./* route_operator_id (moved to routes) */;
-      out./* route_operator_id (moved to routes) */ = (v === '' || v == null) ? null : String(v);
     }
   }
   if ('route_start_date' in out){
@@ -461,9 +457,7 @@ async function refreshAll(showBannerOnErrors){
   } catch(e) { state.payoutMode = 'percent'; }
 
   state.orders = ordRes.data || [];
-  // Detect whether orders table supports /* route_operator_id (moved to routes) */ (some DBs may not have this column yet)
   try {
-    state.supportsRouteOperatorId = (state.orders.length > 0) ? Object.prototype.hasOwnProperty.call(state.orders[0], '/* route_operator_id (moved to routes) */') : state.supportsRouteOperatorId;
   } catch(e) {}
   state.assignments = asnRes.data || [];
 
@@ -888,7 +882,6 @@ function renderHomeOrdersInbox(){
       <td>${((o?.is_deposit===true)||String(o?.is_deposit||'').toLowerCase()==='true') ? '<span class="badge amber"><span class="dot"></span>deposit</span>' : '<span class="badge"><span class="dot"></span>—</span>'}</td>
       <td>${(o.service_day!=null && String(o.service_day)!=='') ? escapeHtml(dayName(Number(o.service_day))) : '—'}</td>
       <td>${o.route_start_date ? escapeHtml(String(o.route_start_date).slice(0,10)) : '—'}</td>
-      <td>${o./* route_operator_id (moved to routes) */ ? escapeHtml((opsById.get(o./* route_operator_id (moved to routes) */)?.name)||'') : '—'}</td>
       <td>${escapeHtml(stage)}</td>
     </tr>`);
   }
@@ -1221,11 +1214,9 @@ function renderDayAssignBoard(){
       opSel.append(new Option('Unassigned',''));
       ops.forEach(op => opSel.append(new Option(op.name, op.id)));
       if (state.supportsRouteOperatorId){
-        opSel.value = o./* route_operator_id (moved to routes) */ || '';
       } else {
         opSel.value = '';
         opSel.disabled = true;
-        opSel.title = "Operator preference column missing in Supabase orders table. Add /* route_operator_id (moved to routes) */ (uuid) to enable per-order operator selection.";
       }
 
       const daySel = document.createElement('select');
@@ -1268,7 +1259,6 @@ function renderDayAssignBoard(){
         const patch = {};
         patch.service_day = daySel.value === '' ? null : Number(daySel.value);
         patch.route_start_date = startInput.value ? startInput.value : null;
-        if (state.supportsRouteOperatorId) patch./* route_operator_id (moved to routes) */ = opSel.value || null;
         return patch;
       };
 
@@ -1339,7 +1329,6 @@ async function generateRunAssignments(){
       id: ex?.id, // keep id if present
       order_id: o.id,
       service_date: runISO,
-      operator_id: o./* route_operator_id (moved to routes) */ || ex?.operator_id || null,
       stop_order: (ex?.stop_order != null) ? Number(ex.stop_order) : nextStop++
     });
   }
