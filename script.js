@@ -80,30 +80,30 @@ const parseISO = (s) => {
 
 // Route readiness (0-100). Simple progress signal before activating a route.
 function computeRouteReadiness(route){
-  if (!route) return { pct:0, reasons:['No route selected'] };
-  const reasons = [];
-  let score = 0;
+  // Route readiness = ONLY how close you are to the can capacity needed to launch
+  if (!route) return { pct:0, assignedCans:0, targetCans:0, reasons:['No route selected'] };
 
-  // Basics
-  if ((route.name||'').trim()) score += 10; else reasons.push('Add a route name');
-  if ((route.service_day||'').trim()) score += 15; else reasons.push('Choose a service day');
-  if (Number(route.target_cans||0) > 0) score += 15; else reasons.push('Set target cans');
-  if (route.operator_id) score += 20; else reasons.push('Assign an operator');
-
-  // Orders attached (up to 40 points)
   const orders = (state.orders||[]).filter(o => String(o.route_id||'') === String(route.id||''));
-  const target = Math.max(1, Number(route.target_cans||orders.length||1));
-  const ratio = Math.min(1, orders.length / target);
-  score += Math.round(40 * ratio);
-  if (orders.length < target){
-    reasons.push(`Add ${target - orders.length} more stop(s)`);
+
+  const assignedCans = orders.reduce((sum, o)=>{
+    const n = parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''), 10);
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
+
+  const targetCans = Math.max(0, parseInt(String(route.target_cans ?? ''), 10) || 0);
+
+  if (targetCans <= 0){
+    return { pct: 0, assignedCans, targetCans, reasons:['Set target cans for this route'] };
   }
 
-  // If operator missing, prevent "ready" feel from being too optimistic
-  if (!route.operator_id && score > 80) score = 80;
-
-  score = Math.max(0, Math.min(100, score));
-  return { pct: score, reasons };
+  const pct = Math.max(0, Math.min(100, Math.round((assignedCans / targetCans) * 100)));
+  const reasons = [];
+  if (assignedCans < targetCans){
+    reasons.push(`Need ${targetCans - assignedCans} more can(s) to launch`);
+  } else {
+    reasons.push('Target met — ready to activate');
+  }
+  return { pct, assignedCans, targetCans, reasons };
 }
 
 
@@ -112,10 +112,16 @@ function setRouteReadinessUI(route){
   const barEl = document.getElementById('routeReadinessBar');
   const hintEl = document.getElementById('routeReadinessHint');
   if (!pctEl || !barEl || !hintEl) return;
+
   const info = computeRouteReadiness(route);
   pctEl.textContent = String(info.pct);
   barEl.style.width = info.pct + '%';
-  hintEl.textContent = info.reasons.length ? info.reasons.slice(0,2).join(' • ') : 'Ready to activate.';
+
+  if (info.targetCans > 0){
+    hintEl.textContent = `${info.assignedCans}/${info.targetCans} cans • ${info.reasons[0] || ''}`.trim();
+  } else {
+    hintEl.textContent = info.reasons[0] || 'Set target cans to enable readiness.';
+  }
 }
 
 // Very lightweight stop ordering: if lat/lng exist, use a nearest-neighbor pass; otherwise fall back to ZIP/address.
@@ -1075,7 +1081,7 @@ function renderHomeOrdersInbox(){
     html.push(`<tr class="clickable" data-order-id="${escapeHtml(o.id)}">
       <td>
         <div class="title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
-        <div class="sub">${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))} • ${r.days===null?'—':escapeHtml(String(r.days)+'d old')}</div>
+        <div class="sub">${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))} • ${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${r.days===null?'—':escapeHtml(String(r.days)+'d old')}</div>
       </td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(r.cad||o.cadence||'')}</td>
@@ -1649,6 +1655,7 @@ function renderOrders(){
     <th>Business</th>
     <th>Address</th>
     <th>Cadence</th>
+    <th>Cans</th>
     <th>Preferred day</th>
     <th>Monthly</th>
     <th>Status</th>
@@ -1660,6 +1667,7 @@ function renderOrders(){
       <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(o.cadence||'')}</td>
+      <td>${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} </td>
       <td>${escapeHtml(o.preferred_service_day||'')}</td>
       <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
       <td>${escapeHtml(stageLabelForOrder(o))}</td>
@@ -2069,7 +2077,7 @@ function renderRoutes(){
           <div style="font-weight:700;">${escapeHtml(r.name || '(Unnamed Route)')}</div>
           <div class="muted">${escapeHtml(r.service_day||'')} • ${escapeHtml(r.status||'draft')}</div>
           <div class="progressLine" style="margin-top:10px;"><span style="width:${pct}%;"></span></div>
-          <div class="muted" style="margin-top:6px;">${pct}% ready</div>
+          <div class="muted" style="margin-top:6px;">${prog.assignedCans}/${prog.targetCans||0} cans</div>
         </div>
         <div class="chip">${(r.target_cans||'') ? `${r.target_cans} cans` : ''}</div>
       </div>`;
@@ -2139,7 +2147,7 @@ function renderRouteDetails(){
                 <div style="font-weight:700;">${escapeHtml(stop + '. ' + (o.business_name||o.biz_name||o.name||'Order'))}</div>
                 <div class="muted">${escapeHtml(o.address||o.location||'')}</div>
               </div>
-              <div class="muted">${escapeHtml(cadence)}</div>
+              <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(cadence)}</div>
             </div>
           </div>
         `;
@@ -2191,7 +2199,7 @@ function renderRouteAddList(){
           <div style="font-weight:700;">${escapeHtml(name)}</div>
           <div class="muted">${escapeHtml(addr)}</div>
         </div>
-        <div class="muted">${escapeHtml(o.cadence||'')}</div>
+        <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(o.cadence||'')}</div>
       </label>
     `;
   }).join('');
@@ -2403,21 +2411,11 @@ async function printRoutePDF(){
     return;
   }
 
-  // Decide which cadences to include
-  const includeMonthly = (document.getElementById('printIncludeMonthly')?.checked ?? true);
-  const includeBiweekly = (document.getElementById('printIncludeBiweekly')?.checked ?? true);
+  // Service date = the date you generate the PDF (what the operator runs "this time")
+  const serviceDate = new Date(); serviceDate.setHours(0,0,0,0);
+  const serviceISO = toISODate(serviceDate);
 
   let orders = (state.orders||[]).filter(o=>String(o.route_id||'')===String(rid));
-
-  // Filter by cadence toggles (non-matching cadences are still shown but marked as SKIP)
-  const cadenceOf = (o) => String(o.cadence || o.service_frequency || o.frequency || '').toLowerCase();
-  const markSkip = (o) => {
-    const c = cadenceOf(o);
-    if (!c) return false;
-    if (c.includes('month') && !includeMonthly) return true;
-    if ((c.includes('bi') || c.includes('2')) && !includeBiweekly) return true;
-    return false;
-  };
 
   // Optimize order by location
   const ordered = optimizeStops(orders);
@@ -2425,27 +2423,56 @@ async function printRoutePDF(){
   const title = escapeHtml(r.name || 'Route');
   const meta = `${escapeHtml(r.service_day || '')} • ${escapeHtml(r.status || 'draft')}`;
 
+  // Helper: cadence -> normalized
+  const normCad = (o) => {
+    const c = String(o.cadence || o.service_frequency || o.frequency || '').toLowerCase();
+    if (c.includes('bi') || c.includes('2')) return 'biweekly';
+    if (c.includes('month')) return 'monthly';
+    return c || 'biweekly';
+  };
+
+  // Helper: determine if this stop is due on this service date
+  // Assumption: routes run every 2 weeks; monthly stops happen every 4 weeks (every other route run).
+  const anchorFor = (o) => {
+    const cand = o.start_date || o.startDate || o.created_at || r.created_at || null;
+    const d = cand ? new Date(cand) : null;
+    if (!d || isNaN(d.getTime())) return serviceDate;
+    d.setHours(0,0,0,0);
+    return d;
+  };
+  const runIndexFor = (o) => {
+    const anchor = anchorFor(o);
+    const days = Math.floor((serviceDate.getTime() - anchor.getTime()) / 86400000);
+    const idx = Math.floor(days / 14);
+    return Math.max(0, idx);
+  };
+  const isDueThisRun = (o) => {
+    const cad = normCad(o);
+    const idx = runIndexFor(o);
+    if (cad === 'monthly') return (idx % 2) === 0;
+    // biweekly (and anything else) = every run
+    return true;
+  };
+
   const stopsHtml = ordered.map((o, idx)=>{
     const stopNum = idx + 1;
     const name = escapeHtml(o.business_name||o.biz_name||o.name||'Stop');
     const addr = escapeHtml(o.address||o.location||'');
-    const cadence = escapeHtml(o.cadence || o.service_frequency || o.frequency || '');
-    const cans = escapeHtml(String(o.cans ?? o.can_count ?? o.qty ?? ''));
-    const skip = markSkip(o);
+    const cadence = normCad(o);
+    const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
+    const due = isDueThisRun(o);
+    const badge = due ? '<span class="badge due">DUE</span>' : '<span class="badge skip">SKIP</span>';
+    const note = due ? '' : ' <span class="printSmall">(Monthly stop — not due this run)</span>';
     return `
       <div class="printStop">
         <div class="top">
-          <div class="name">${stopNum}. ${name}${skip ? ' <span class="printSmall">(SKIP)</span>' : ''}</div>
-          <div class="meta">${cadence}${cans ? ' • ' + cans + ' can(s)' : ''}</div>
+          <div class="name">${stopNum}. ${name} ${badge}${note}</div>
+          <div class="meta">${escapeHtml(cadence)} • ${escapeHtml(String(cansN))} can(s)</div>
         </div>
         <div class="printSmall">${addr}</div>
       </div>
     `;
   }).join('');
-
-  const controlsNotice = (!includeMonthly || !includeBiweekly)
-    ? `<div class="printSmall">Filter active: ${includeMonthly ? '' : 'monthly excluded'} ${includeBiweekly ? '' : 'biweekly excluded'}</div>`
-    : '';
 
   const html = `
     <html>
@@ -2457,33 +2484,32 @@ async function printRoutePDF(){
           .printSmall{font-size:12px;color:#444;}
           .printStop{padding:10px 0;border-bottom:1px solid #eee;}
           .printStop:last-child{border-bottom:none;}
-          .top{display:flex;justify-content:space-between;gap:12px;}
-          .name{font-weight:700;}
-          @media print{ .noPrint{display:none;} }
+          .top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
+          .name{font-weight:800;font-size:14px;line-height:1.25;}
+          .meta{font-size:12px;color:#444;white-space:nowrap;}
+          .badge{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;vertical-align:middle;}
+          .badge.due{background:#e7f7ee;color:#145a2b;border:1px solid #bfe6cd;}
+          .badge.skip{background:#fff1f1;color:#7a1a1a;border:1px solid #f0c2c2;}
+          @media print { button{display:none;} }
         </style>
       </head>
       <body>
-        <div class="noPrint" style="margin-bottom:12px;">
-          <button onclick="window.print()" style="padding:10px 12px;border-radius:10px;border:1px solid #ddd;cursor:pointer;">Print / Save as PDF</button>
-        </div>
         <div class="printH1">${title}</div>
         <div class="printSmall">${meta}</div>
-        ${controlsNotice}
-        <hr style="border:none;border-top:1px solid #eee;margin:12px 0;"/>
-        ${stopsHtml}
+        <div class="printSmall">Service date: <b>${escapeHtml(serviceISO)}</b> (generated today)</div>
+        <div class="printSmall" style="margin-top:8px;">
+          This route runs biweekly. Monthly stops are automatically marked SKIP on off-runs, but are still listed in-order for simplicity.
+        </div>
+        <div style="margin-top:14px;">${stopsHtml}</div>
+        <script>window.print();</script>
       </body>
     </html>
   `;
-
   const w = window.open('', '_blank');
-  if (!w){
-    toast('Popup blocked — allow popups to print', 'warn');
-    return;
-  }
+  if (!w) return toast('Popup blocked. Allow popups to print.', 'warn');
   w.document.open();
   w.document.write(html);
   w.document.close();
-  setTimeout(()=>{ try{ w.focus(); }catch(e){} }, 200);
 }
 
 async function createRoute(){
