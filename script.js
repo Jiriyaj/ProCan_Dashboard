@@ -76,6 +76,52 @@ const parseISO = (s) => {
   return isNaN(d) ? null : d;
 };
 
+function parseISODate(s){
+  const d = s ? new Date(String(s).slice(0,10) + 'T00:00:00') : null;
+  return (d && !isNaN(d.getTime())) ? d : null;
+}
+function addDays(d, days){
+  const x = new Date(d.getTime());
+  x.setDate(x.getDate()+days);
+  return x;
+}
+function addMonths(d, months){
+  const x = new Date(d.getTime());
+  const day = x.getDate();
+  x.setMonth(x.getMonth()+months);
+  // handle month rollover
+  if (x.getDate() !== day) x.setDate(0);
+  return x;
+}
+function fmtDateLong(d){
+  try{
+    return d.toLocaleDateString(undefined, { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+  }catch(e){
+    return toISODate(d);
+  }
+}
+function computeNextServiceDates(route){
+  const cadence = String(route?.cadence || 'biweekly').toLowerCase();
+  const start = parseISODate(route?.service_start_date);
+  if (!start) return { next:null, next2:null };
+
+  const last = parseISODate(route?.last_service_date);
+  const base = last ? (cadence==='monthly' ? addMonths(last,1) : addDays(last,14)) : start;
+
+  // If base is in the past, roll forward until >= today
+  const today = new Date(); today.setHours(0,0,0,0);
+  let next = new Date(base.getTime());
+  let guard = 0;
+  while (next < today && guard < 80){
+    next = (cadence==='monthly') ? addMonths(next,1) : addDays(next,14);
+    guard++;
+  }
+  const next2 = (cadence==='monthly') ? addMonths(next,1) : addDays(next,14);
+  return { next, next2 };
+}
+const PROCAN_API_BASE = (window.PROCAN_API_BASE || localStorage.getItem('PROCAN_API_BASE') || '').trim();
+
+
 
 
 // Route readiness (0-100). Simple progress signal before activating a route.
@@ -479,6 +525,7 @@ function wireUI(){
   // Routes (route-first)
   on('btnNewRoute','click', async ()=>{ await createRoute(); });
   on('btnSaveRoute','click', async ()=>{ await saveRoute(); });
+  on('btnScheduleRoute','click', async ()=>{ await scheduleRouteStart(); });
   on('btnPrintRoute','click', async ()=>{ await printRoutePDF(); });
   on('btnDeleteRoute','click', async ()=>{ await deleteRoute(); });
   on('btnAutoGroupRoutes','click', async ()=>{ await autoGroupOrdersIntoRoutes(); });
@@ -2120,6 +2167,16 @@ function renderRouteDetails(){
   document.getElementById('routeServiceDay').value = r.service_day || 'Monday';
   document.getElementById('routeStatus').value = r.status || 'draft';
   document.getElementById('routeTargetCans').value = r.target_cans || '';
+  // Cadence + schedule dates
+  const cadEl = document.getElementById('routeCadence');
+  if (cadEl) cadEl.value = (r.cadence || 'biweekly');
+  const startEl = document.getElementById('routeStartDate');
+  if (startEl) startEl.value = (r.service_start_date || '');
+  const nextEl = document.getElementById('routeNextServiceDate');
+  const next2El = document.getElementById('routeNextNextServiceDate');
+  const nd = computeNextServiceDates(r);
+  if (nextEl) nextEl.value = nd.next ? fmtDateLong(nd.next) : '—';
+  if (next2El) next2El.textContent = nd.next2 ? ('Next next: ' + fmtDateLong(nd.next2)) : '';
 
   // Operator dropdown
   const sel = document.getElementById('routeOperator');
@@ -2405,110 +2462,145 @@ async function printRoutePDF(){
     toast('Select a route first', 'warn');
     return;
   }
-  const r = (state.routes||[]).find(x=>x.id===rid);
+  const r = (state.routes||[]).find(x=>String(x.id)===String(rid));
   if (!r){
     toast('Route not found', 'warn');
     return;
   }
 
-  // Service date = the date you generate the PDF (what the operator runs "this time")
-  const serviceDate = new Date(); serviceDate.setHours(0,0,0,0);
+  // Determine service date automatically from route schedule
+  const { next, next2 } = computeNextServiceDates(r);
+  if (!next){
+    toast('Set a First Service Date for this route first', 'warn');
+    return;
+  }
+  const serviceDate = next;
   const serviceISO = toISODate(serviceDate);
+  const nextISO = next2 ? toISODate(next2) : '';
 
   let orders = (state.orders||[]).filter(o=>String(o.route_id||'')===String(rid));
 
-  // Optimize order by location
+  // Optimize order by location (lat/lng if present; fallback to ZIP/address)
   const ordered = optimizeStops(orders);
 
   const title = escapeHtml(r.name || 'Route');
-  const meta = `${escapeHtml(r.service_day || '')} • ${escapeHtml(r.status || 'draft')}`;
+  const meta = `${escapeHtml(r.service_day || '')} • ${escapeHtml(String(r.cadence||'biweekly'))}`;
 
-  // Helper: cadence -> normalized
-  const normCad = (o) => {
-    const c = String(o.cadence || o.service_frequency || o.frequency || '').toLowerCase();
-    if (c.includes('bi') || c.includes('2')) return 'biweekly';
+  // Normalize service frequency for a stop (ops cadence, not billing cadence)
+  const normFreq = (o) => {
+    const c = String(o.service_frequency || o.cadence || o.frequency || '').toLowerCase();
+    if (c.includes('bi')) return 'biweekly';
     if (c.includes('month')) return 'monthly';
     return c || 'biweekly';
   };
 
-  // Helper: determine if this stop is due on this service date
-  // Assumption: routes run every 2 weeks; monthly stops happen every 4 weeks (every other route run).
-  const anchorFor = (o) => {
-    const cand = o.start_date || o.startDate || o.created_at || r.created_at || null;
-    const d = cand ? new Date(cand) : null;
-    if (!d || isNaN(d.getTime())) return serviceDate;
-    d.setHours(0,0,0,0);
-    return d;
-  };
-  const runIndexFor = (o) => {
-    const anchor = anchorFor(o);
-    const days = Math.floor((serviceDate.getTime() - anchor.getTime()) / 86400000);
-    const idx = Math.floor(days / 14);
-    return Math.max(0, idx);
-  };
+  // Compute route run index (0,1,2...) from route.service_start_date
+  const start = parseISODate(r.service_start_date);
+  const runIndex = (()=>{
+    if (!start) return 0;
+    const cadence = String(r.cadence||'biweekly').toLowerCase();
+    const days = Math.floor((serviceDate.getTime() - start.getTime()) / 86400000);
+    if (cadence === 'monthly'){
+      // monthly route run: index by month diff (approx by iterating)
+      let idx=0; let cur=new Date(start.getTime());
+      while (cur < serviceDate && idx < 120){
+        cur = addMonths(cur, 1);
+        idx++;
+      }
+      return idx;
+    }
+    return Math.max(0, Math.round(days / 14)); // biweekly
+  })();
+
+  // Is stop due on this service date?
   const isDueThisRun = (o) => {
-    const cad = normCad(o);
-    const idx = runIndexFor(o);
-    if (cad === 'monthly') return (idx % 2) === 0;
-    // biweekly (and anything else) = every run
-    return true;
+    const f = normFreq(o);
+    const cadence = String(r.cadence||'biweekly').toLowerCase();
+    if (cadence === 'monthly'){
+      // Route only runs monthly; everything printed is due (monthly service)
+      return true;
+    }
+    // Biweekly route:
+    if (f === 'monthly') return (runIndex % 2) === 0; // every other run
+    return true; // biweekly service
   };
 
   const stopsHtml = ordered.map((o, idx)=>{
     const stopNum = idx + 1;
     const name = escapeHtml(o.business_name||o.biz_name||o.name||'Stop');
     const addr = escapeHtml(o.address||o.location||'');
-    const cadence = normCad(o);
+    const freq = normFreq(o);
     const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
     const due = isDueThisRun(o);
     const badge = due ? '<span class="badge due">DUE</span>' : '<span class="badge skip">SKIP</span>';
-    const note = due ? '' : ' <span class="printSmall">(Monthly stop — not due this run)</span>';
+    const hint = due ? '' : ' <span class="muted">(skip this run)</span>';
+
     return `
-      <div class="printStop">
-        <div class="top">
-          <div class="name">${stopNum}. ${name} ${badge}${note}</div>
-          <div class="meta">${escapeHtml(cadence)} • ${escapeHtml(String(cansN))} can(s)</div>
-        </div>
-        <div class="printSmall">${addr}</div>
-      </div>
+      <tr>
+        <td class="num">${stopNum}</td>
+        <td>
+          <div class="title">${name} ${badge}</div>
+          <div class="sub">${addr}</div>
+        </td>
+        <td>${escapeHtml(String(cansN))}</td>
+        <td>${escapeHtml(freq)}</td>
+        <td>${hint}</td>
+      </tr>
     `;
   }).join('');
 
-  const html = `
-    <html>
-      <head>
-        <title>${title}</title>
-        <style>
-          body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;padding:24px;color:#111;}
-          .printH1{font-size:20px;font-weight:800;margin:0 0 6px 0;}
-          .printSmall{font-size:12px;color:#444;}
-          .printStop{padding:10px 0;border-bottom:1px solid #eee;}
-          .printStop:last-child{border-bottom:none;}
-          .top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
-          .name{font-weight:800;font-size:14px;line-height:1.25;}
-          .meta{font-size:12px;color:#444;white-space:nowrap;}
-          .badge{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;vertical-align:middle;}
-          .badge.due{background:#e7f7ee;color:#145a2b;border:1px solid #bfe6cd;}
-          .badge.skip{background:#fff1f1;color:#7a1a1a;border:1px solid #f0c2c2;}
-          @media print { button{display:none;} }
-        </style>
-      </head>
-      <body>
-        <div class="printH1">${title}</div>
-        <div class="printSmall">${meta}</div>
-        <div class="printSmall">Service date: <b>${escapeHtml(serviceISO)}</b> (generated today)</div>
-        <div class="printSmall" style="margin-top:8px;">
-          This route runs biweekly. Monthly stops are automatically marked SKIP on off-runs, but are still listed in-order for simplicity.
-        </div>
-        <div style="margin-top:14px;">${stopsHtml}</div>
-        <script>window.print();</script>
-      </body>
-    </html>
-  `;
   const w = window.open('', '_blank');
-  if (!w) return toast('Popup blocked. Allow popups to print.', 'warn');
+  if (!w) { toast('Pop-up blocked. Allow pop-ups to print.', 'warn'); return; }
+
   w.document.open();
-  w.document.write(html);
+  w.document.write(`
+    <html>
+    <head>
+      <meta charset="utf-8"/>
+      <title>${title} — Service Sheet</title>
+      <style>
+        body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding:24px; color:#0b1220; }
+        h1{ margin:0 0 6px; font-size:22px; }
+        .meta{ color:#4b5563; margin-bottom:14px; }
+        .dates{ margin:10px 0 16px; padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; }
+        .dates b{ display:inline-block; min-width:140px; }
+        table{ width:100%; border-collapse:collapse; }
+        th,td{ border-bottom:1px solid #e5e7eb; padding:10px 8px; vertical-align:top; }
+        th{ text-align:left; font-size:12px; color:#6b7280; letter-spacing:.04em; text-transform:uppercase; }
+        .num{ width:40px; color:#6b7280; }
+        .title{ font-weight:700; }
+        .sub{ color:#4b5563; font-size:12px; margin-top:2px; }
+        .badge{ display:inline-block; font-size:11px; padding:2px 7px; border-radius:999px; margin-left:8px; }
+        .badge.due{ background:#dcfce7; color:#166534; }
+        .badge.skip{ background:#fee2e2; color:#991b1b; }
+        .muted{ color:#6b7280; font-size:12px; }
+      </style>
+    </head>
+    <body>
+      <h1>${title}</h1>
+      <div class="meta">${meta}</div>
+      <div class="dates">
+        <div><b>Service Date:</b> ${escapeHtml(fmtDateLong(serviceDate))} (${escapeHtml(serviceISO)})</div>
+        <div><b>Next Service Date:</b> ${escapeHtml(next2 ? fmtDateLong(next2) : '—')} ${nextISO ? '('+escapeHtml(nextISO)+')' : ''}</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Stop</th>
+            <th>Cans</th>
+            <th>Service</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${stopsHtml}
+        </tbody>
+      </table>
+      <script>window.print();<\/script>
+    </body>
+    </html>
+  `);
   w.document.close();
 }
 
@@ -2538,7 +2630,9 @@ async function saveRoute(){
     service_day: document.getElementById('routeServiceDay').value,
     status: document.getElementById('routeStatus').value,
     target_cans: Number(document.getElementById('routeTargetCans').value||0) || null,
-    operator_id: document.getElementById('routeOperator').value || null
+    operator_id: document.getElementById('routeOperator').value || null,
+    cadence: (document.getElementById('routeCadence')?.value || 'biweekly'),
+    service_start_date: (document.getElementById('routeStartDate')?.value || null)
   };
   const { error } = await supabaseClient.from('routes').update(payload).eq('id', rid);
   if (error) return toast(fmtSbError(error), 'warn');
@@ -2546,6 +2640,51 @@ async function saveRoute(){
   renderRoutes();
   renderRouteDetails();
   toast('Route saved', 'ok');
+}
+
+
+async function scheduleRouteStart(){
+  const rid = state.selectedRouteId;
+  if (!rid){ toast('Select a route first','warn'); return; }
+  const r = (state.routes||[]).find(x=>x.id===rid);
+  const startDate = document.getElementById('routeStartDate')?.value || '';
+  if (!startDate){ toast('Set First Service Date first','warn'); return; }
+  const cadence = (document.getElementById('routeCadence')?.value || 'biweekly');
+
+  // Persist route schedule in Supabase
+  const { error } = await supabaseClient.from('routes').update({ service_start_date: startDate, cadence }).eq('id', rid);
+  if (error){ toast(fmtSbError(error),'warn'); return; }
+  await loadRoutes();
+  renderRoutes();
+  renderRouteDetails();
+
+  // Optional: call backend to sync Stripe subscription trial_end + apply deposit credit.
+  const base = (PROCAN_API_BASE || '');
+  if (!base){
+    toast('Route scheduled. Set PROCAN_API_BASE (intake domain) to sync billing.', 'ok');
+    return;
+  }
+  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
+  if (!token){
+    toast('Route scheduled. Set PROCAN_ROUTE_TOKEN in localStorage to sync billing.', 'ok');
+    return;
+  }
+
+  try{
+    const resp = await fetch(base.replace(/\/$/,'') + '/api/schedule-route', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
+    });
+    const data = await resp.json().catch(()=> ({}));
+    if (!resp.ok){
+      toast(data?.error || 'Billing sync failed', 'warn');
+      return;
+    }
+    toast('Billing synced for route', 'ok');
+  }catch(e){
+    toast('Billing sync failed: ' + (e?.message||e), 'warn');
+  }
 }
 
 async function deleteRoute(){

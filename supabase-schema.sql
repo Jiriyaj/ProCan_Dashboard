@@ -113,3 +113,20 @@ BEGIN
       WITH CHECK (auth.role() = 'authenticated');
   END IF;
 END $$;
+
+
+-- Route scheduling fields
+alter table public.routes
+  add column if not exists service_start_date date,
+  add column if not exists cadence text not null default 'biweekly',
+  add column if not exists last_service_date date;
+
+-- Optional geocoding fields on orders (for precise routing)
+alter table public.orders
+  add column if not exists lat double precision,
+  add column if not exists lng double precision;
+
+-- Service/billing fields (service cadence is biweekly|monthly; billing cadence is monthly|quarterly|annual)
+alter table public.orders
+  add column if not exists service_frequency text,
+  add column if not exists billing_interval text;

@@ -220,6 +220,24 @@
 <option value="Sunday">Sunday</option>
 </select>
 </div>
+
+<div class="formRow">
+<label>Route Cadence</label>
+<select id="routeCadence">
+  <option value="biweekly">Biweekly</option>
+  <option value="monthly">Monthly</option>
+</select>
+</div>
+<div class="formRow">
+<label>First Service Date</label>
+<input id="routeStartDate" type="date"/>
+</div>
+<div class="formRow">
+<label>Next Service Date</label>
+<input id="routeNextServiceDate" type="text" disabled/>
+<div class="muted" id="routeNextNextServiceDate" style="margin-top:4px;"></div>
+</div>
+
 <div class="formRow">
 <label>Status</label>
 <select id="routeStatus">
@@ -238,6 +256,7 @@
 </div>
 <div class="formRow">
 <button class="btn primary" id="btnSaveRoute">Save Route</button>
+<button class="btn outline" id="btnScheduleRoute">Schedule Start</button>
 <button class="btn" id="btnPrintRoute">Print PDF</button>
 <button class="btn danger" id="btnDeleteRoute">Delete Route</button>
 </div>
