@@ -75,6 +75,110 @@ const parseISO = (s) => {
   const d = new Date(m);
   return isNaN(d) ? null : d;
 };
+
+
+
+// Route readiness (0-100). Simple progress signal before activating a route.
+function computeRouteReadiness(route){
+  if (!route) return { pct:0, reasons:['No route selected'] };
+  const reasons = [];
+  let score = 0;
+
+  // Basics
+  if ((route.name||'').trim()) score += 10; else reasons.push('Add a route name');
+  if ((route.service_day||'').trim()) score += 15; else reasons.push('Choose a service day');
+  if (Number(route.target_cans||0) > 0) score += 15; else reasons.push('Set target cans');
+  if (route.operator_id) score += 20; else reasons.push('Assign an operator');
+
+  // Orders attached (up to 40 points)
+  const orders = (state.orders||[]).filter(o => String(o.route_id||'') === String(route.id||''));
+  const target = Math.max(1, Number(route.target_cans||orders.length||1));
+  const ratio = Math.min(1, orders.length / target);
+  score += Math.round(40 * ratio);
+  if (orders.length < target){
+    reasons.push(`Add ${target - orders.length} more stop(s)`);
+  }
+
+  // If operator missing, prevent "ready" feel from being too optimistic
+  if (!route.operator_id && score > 80) score = 80;
+
+  score = Math.max(0, Math.min(100, score));
+  return { pct: score, reasons };
+}
+
+
+function setRouteReadinessUI(route){
+  const pctEl = document.getElementById('routeReadinessPct');
+  const barEl = document.getElementById('routeReadinessBar');
+  const hintEl = document.getElementById('routeReadinessHint');
+  if (!pctEl || !barEl || !hintEl) return;
+  const info = computeRouteReadiness(route);
+  pctEl.textContent = String(info.pct);
+  barEl.style.width = info.pct + '%';
+  hintEl.textContent = info.reasons.length ? info.reasons.slice(0,2).join(' • ') : 'Ready to activate.';
+}
+
+// Very lightweight stop ordering: if lat/lng exist, use a nearest-neighbor pass; otherwise fall back to ZIP/address.
+function getLatLng(order){
+  const lat = order.lat ?? order.latitude ?? order.geo_lat ?? null;
+  const lng = order.lng ?? order.longitude ?? order.geo_lng ?? null;
+  const a = Number(lat); const b = Number(lng);
+  if (!isFinite(a) || !isFinite(b)) return null;
+  return { lat:a, lng:b };
+}
+
+function haversineKm(a,b){
+  const R = 6371;
+  const toRad = (x)=>x * Math.PI/180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lng - a.lng);
+  const s1 = Math.sin(dLat/2);
+  const s2 = Math.sin(dLon/2);
+  const q = s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(q)));
+}
+
+function extractZip(order){
+  const z = order.zip ?? order.postal_code ?? order.zip_code ?? '';
+  if (z) return String(z).trim();
+  const addr = String(order.address||order.location||'');
+  const m = addr.match(/\b\d{5}(?:-\d{4})?\b/);
+  return m ? m[0] : '';
+}
+
+function orderStopsEfficiently(orders){
+  const pts = orders.map(o=>({ o, p:getLatLng(o) })).filter(x=>x.p);
+  if (pts.length === orders.length && orders.length > 2){
+    const remaining = pts.slice();
+    const route = [];
+    // Start with the first stop as anchor
+    let current = remaining.shift();
+    route.push(current.o);
+    while(remaining.length){
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i=0;i<remaining.length;i++){
+        const d = haversineKm(current.p, remaining[i].p);
+        if (d < bestDist){ bestDist = d; bestIdx = i; }
+      }
+      current = remaining.splice(bestIdx,1)[0];
+      route.push(current.o);
+    }
+    return route;
+  }
+
+  // Fallback: ZIP then address then name
+  return [...orders].sort((a,b)=>{
+    const za = extractZip(a); const zb = extractZip(b);
+    if (za !== zb) return za.localeCompare(zb);
+    const aa = String(a.address||a.location||'');
+    const ab = String(b.address||b.location||'');
+    if (aa !== ab) return aa.localeCompare(ab);
+    const na = String(a.business_name||a.biz_name||a.name||'');
+    const nb = String(b.business_name||b.biz_name||b.name||'');
+    return na.localeCompare(nb);
+  });
+}
 const startOfWeek = (date) => {
   const d = new Date(date);
   const day = (d.getDay() + 6) % 7; // Mon=0
@@ -369,6 +473,7 @@ function wireUI(){
   // Routes (route-first)
   on('btnNewRoute','click', async ()=>{ await createRoute(); });
   on('btnSaveRoute','click', async ()=>{ await saveRoute(); });
+  on('btnPrintRoute','click', async ()=>{ await printRoutePDF(); });
   on('btnDeleteRoute','click', async ()=>{ await deleteRoute(); });
   on('btnAutoGroupRoutes','click', async ()=>{ await autoGroupOrdersIntoRoutes(); });
   on('btnAddSelectedToRoute','click', async ()=>{ await addSelectedOrdersToRoute(); });
@@ -1902,6 +2007,9 @@ function buildRoutesWeekFilter(){
   const routes = state.routes || [];
   const weeks = new Map(); // iso -> label
   for (const r of routes){
+    const prog = computeRouteReadiness(r);
+    const pct = prog.pct;
+
     if (!r.created_at) continue;
     const ws = toISODate(weekStartMonday(new Date(r.created_at)));
     if (!weeks.has(ws)) weeks.set(ws, ws);
@@ -1949,6 +2057,9 @@ function renderRoutes(){
     return;
   }
   for (const r of routes){
+    const prog = computeRouteReadiness(r);
+    const pct = prog.pct;
+
     const div = document.createElement('div');
     div.className = 'row';
     div.style.cursor='pointer';
@@ -1957,6 +2068,8 @@ function renderRoutes(){
         <div>
           <div style="font-weight:700;">${escapeHtml(r.name || '(Unnamed Route)')}</div>
           <div class="muted">${escapeHtml(r.service_day||'')} • ${escapeHtml(r.status||'draft')}</div>
+          <div class="progressLine" style="margin-top:10px;"><span style="width:${pct}%;"></span></div>
+          <div class="muted" style="margin-top:6px;">${pct}% ready</div>
         </div>
         <div class="chip">${(r.target_cans||'') ? `${r.target_cans} cans` : ''}</div>
       </div>`;
@@ -1983,6 +2096,17 @@ function renderRouteDetails(){
 
   empty.style.display='none';
   wrap.style.display='block';
+
+  // Readiness indicator
+  const prog = computeRouteReadiness(r);
+  const pctEl = document.getElementById('routeReadinessPct');
+  const barEl = document.getElementById('routeReadinessBar');
+  const hintEl = document.getElementById('routeReadinessHint');
+  if (pctEl) pctEl.textContent = String(prog.pct);
+  if (barEl) barEl.style.width = prog.pct + '%';
+  if (hintEl){
+    hintEl.textContent = (prog.pct >= 100) ? 'Ready to activate.' : (prog.reasons[0] ? ('Next: ' + prog.reasons[0]) : '');
+  }
 
   document.getElementById('routeName').value = r.name || '';
   document.getElementById('routeServiceDay').value = r.service_day || 'Monday';
@@ -2198,6 +2322,169 @@ async function openOrderInRoute(orderId){
 }
 
 
+
+
+
+/* ========= Route printing / PDF ========= */
+
+// Attempt to pull lat/lng fields from an order (supports different column names)
+function getLatLng(order){
+  const lat = order.lat ?? order.latitude ?? order.geo_lat ?? order.location_lat;
+  const lng = order.lng ?? order.longitude ?? order.geo_lng ?? order.location_lng;
+  const a = Number(lat), b = Number(lng);
+  if (!isFinite(a) || !isFinite(b)) return null;
+  return { lat:a, lng:b };
+}
+
+// Very lightweight distance heuristic (Haversine-ish in degrees). Good enough for ordering nearby stops.
+function approxDistance(a, b){
+  const dLat = (a.lat - b.lat);
+  const dLng = (a.lng - b.lng);
+  return Math.sqrt(dLat*dLat + dLng*dLng);
+}
+
+function extractZip(order){
+  const z = order.zip ?? order.postal_code ?? order.postal ?? '';
+  if (z) return String(z).trim();
+  const addr = String(order.address || order.location || '').trim();
+  const m = addr.match(/\b\d{5}(?:-\d{4})?\b/);
+  return m ? m[0] : '';
+}
+
+// If we have lat/lng, do a simple nearest-neighbor ordering.
+// Otherwise fall back to ZIP then address string.
+function optimizeStops(orders){
+  if (!orders.length) return orders;
+  const withGeo = orders.map(o=>({ o, g:getLatLng(o) })).filter(x=>x.g);
+  if (withGeo.length >= Math.max(3, Math.floor(orders.length*0.6))){
+    // start at the first stop; greedy nearest neighbor
+    const remaining = withGeo.slice();
+    const ordered = [];
+    let current = remaining.shift();
+    ordered.push(current.o);
+    while (remaining.length){
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i=0;i<remaining.length;i++){
+        const d = approxDistance(current.g, remaining[i].g);
+        if (d < bestDist){
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      current = remaining.splice(bestIdx,1)[0];
+      ordered.push(current.o);
+    }
+    // append any orders without geo at end (still included)
+    const noGeo = orders.filter(o=>!getLatLng(o));
+    return ordered.concat(noGeo);
+  }
+
+  return orders.slice().sort((a,b)=>{
+    const za = extractZip(a);
+    const zb = extractZip(b);
+    if (za && zb && za !== zb) return za.localeCompare(zb);
+    const aa = String(a.address||'');
+    const bb = String(b.address||'');
+    return aa.localeCompare(bb);
+  });
+}
+
+// Opens a print-friendly window (user can "Save as PDF")
+async function printRoutePDF(){
+  const rid = state.selectedRouteId;
+  if (!rid){
+    toast('Select a route first', 'warn');
+    return;
+  }
+  const r = (state.routes||[]).find(x=>x.id===rid);
+  if (!r){
+    toast('Route not found', 'warn');
+    return;
+  }
+
+  // Decide which cadences to include
+  const includeMonthly = (document.getElementById('printIncludeMonthly')?.checked ?? true);
+  const includeBiweekly = (document.getElementById('printIncludeBiweekly')?.checked ?? true);
+
+  let orders = (state.orders||[]).filter(o=>String(o.route_id||'')===String(rid));
+
+  // Filter by cadence toggles (non-matching cadences are still shown but marked as SKIP)
+  const cadenceOf = (o) => String(o.cadence || o.service_frequency || o.frequency || '').toLowerCase();
+  const markSkip = (o) => {
+    const c = cadenceOf(o);
+    if (!c) return false;
+    if (c.includes('month') && !includeMonthly) return true;
+    if ((c.includes('bi') || c.includes('2')) && !includeBiweekly) return true;
+    return false;
+  };
+
+  // Optimize order by location
+  const ordered = optimizeStops(orders);
+
+  const title = escapeHtml(r.name || 'Route');
+  const meta = `${escapeHtml(r.service_day || '')} • ${escapeHtml(r.status || 'draft')}`;
+
+  const stopsHtml = ordered.map((o, idx)=>{
+    const stopNum = idx + 1;
+    const name = escapeHtml(o.business_name||o.biz_name||o.name||'Stop');
+    const addr = escapeHtml(o.address||o.location||'');
+    const cadence = escapeHtml(o.cadence || o.service_frequency || o.frequency || '');
+    const cans = escapeHtml(String(o.cans ?? o.can_count ?? o.qty ?? ''));
+    const skip = markSkip(o);
+    return `
+      <div class="printStop">
+        <div class="top">
+          <div class="name">${stopNum}. ${name}${skip ? ' <span class="printSmall">(SKIP)</span>' : ''}</div>
+          <div class="meta">${cadence}${cans ? ' • ' + cans + ' can(s)' : ''}</div>
+        </div>
+        <div class="printSmall">${addr}</div>
+      </div>
+    `;
+  }).join('');
+
+  const controlsNotice = (!includeMonthly || !includeBiweekly)
+    ? `<div class="printSmall">Filter active: ${includeMonthly ? '' : 'monthly excluded'} ${includeBiweekly ? '' : 'biweekly excluded'}</div>`
+    : '';
+
+  const html = `
+    <html>
+      <head>
+        <title>${title}</title>
+        <style>
+          body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;padding:24px;color:#111;}
+          .printH1{font-size:20px;font-weight:800;margin:0 0 6px 0;}
+          .printSmall{font-size:12px;color:#444;}
+          .printStop{padding:10px 0;border-bottom:1px solid #eee;}
+          .printStop:last-child{border-bottom:none;}
+          .top{display:flex;justify-content:space-between;gap:12px;}
+          .name{font-weight:700;}
+          @media print{ .noPrint{display:none;} }
+        </style>
+      </head>
+      <body>
+        <div class="noPrint" style="margin-bottom:12px;">
+          <button onclick="window.print()" style="padding:10px 12px;border-radius:10px;border:1px solid #ddd;cursor:pointer;">Print / Save as PDF</button>
+        </div>
+        <div class="printH1">${title}</div>
+        <div class="printSmall">${meta}</div>
+        ${controlsNotice}
+        <hr style="border:none;border-top:1px solid #eee;margin:12px 0;"/>
+        ${stopsHtml}
+      </body>
+    </html>
+  `;
+
+  const w = window.open('', '_blank');
+  if (!w){
+    toast('Popup blocked — allow popups to print', 'warn');
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  setTimeout(()=>{ try{ w.focus(); }catch(e){} }, 200);
+}
 
 async function createRoute(){
   if (!state.supportsRoutes) return toast('Routes schema not enabled', 'warn');

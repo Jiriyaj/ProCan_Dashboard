@@ -450,3 +450,20 @@ tr.clickable:hover td{
 
 /* Route focus highlight */
 .row.highlight{ outline:2px solid rgba(255,255,255,0.35); border-radius:12px; }
+
+
+/* Route readiness indicator */
+.progressLine{height:6px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;}
+.progressLine > span{display:block;height:100%;background:linear-gradient(90deg, rgba(255,255,255,0.25), rgba(255,255,255,0.75));width:0%;}
+.progressMeta{display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px;}
+.progressMeta .muted{font-size:12px;}
+
+@media print{
+  body{background:#fff !important;color:#111 !important;}
+  .noPrint{display:none !important;}
+  .printCard{border:1px solid #ddd;border-radius:10px;padding:14px;margin:0 0 12px 0;}
+  .printH1{font-size:18px;margin:0 0 8px 0;}
+  .printSmall{font-size:12px;color:#444;}
+  .printStop{padding:10px 0;border-bottom:1px solid #eee;}
+  .printStop:last-child{border-bottom:none;}
+}

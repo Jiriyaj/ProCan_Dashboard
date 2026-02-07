@@ -197,6 +197,13 @@
 <div class="cardBody">
 <div class="muted" id="routeDetailsEmpty">Select a route to view details.</div>
 <div id="routeDetails" style="display:none;">
+<div class="progressMeta">
+  <div class="muted">Readiness</div>
+  <div class="muted"><span id="routeReadinessPct">0</span>%</div>
+</div>
+<div class="progressLine"><span id="routeReadinessBar"></span></div>
+<div class="muted" style="margin-top:6px;" id="routeReadinessHint"></div>
+
 <div class="formRow">
 <label>Route Name</label>
 <input id="routeName" type="text"/>
@@ -231,11 +238,16 @@
 </div>
 <div class="formRow">
 <button class="btn primary" id="btnSaveRoute">Save Route</button>
+<button class="btn" id="btnPrintRoute">Print PDF</button>
 <button class="btn danger" id="btnDeleteRoute">Delete Route</button>
 </div>
 <hr class="sep"/>
 <div class="cardSubheader">
 <h4>Orders in this route</h4>
+<div class="muted" style="display:flex;gap:14px;align-items:center;margin-top:6px;">
+  <label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="printIncludeMonthly" checked>Include monthly</label>
+  <label style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="printIncludeBiweekly" checked>Include biweekly</label>
+</div>
 <div class="muted">Assign orders from Orders/Home using the Route dropdown.</div>
 </div>
 <div class="list" id="routeOrders"></div>
