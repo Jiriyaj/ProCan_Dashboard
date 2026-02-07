@@ -2,7 +2,7 @@
 async function probeSchema(){
   // Detect if routes table + orders.route_id exist. Safe: if not, we just disable route-first UI.
   try{
-    const r = await supabaseClient.from('routes').select('id,name,service_day,status,target_cans,operator_id').limit(1);
+    const r = await supabaseClient.from('routes').select('id').limit(1);
     if (!r.error) state.supportsRoutes = true;
   }catch(e){}
   try{
@@ -224,6 +224,54 @@ function renderRouteChipForOrder(order){
 
 /* ========= DOM ========= */
 const $ = (id) => document.getElementById(id);
+
+
+/* ========= Toast ========= */
+function toast(message, type='info', ms=2600){
+  try{
+    const hostId = 'toastHost';
+    let host = document.getElementById(hostId);
+    if (!host){
+      host = document.createElement('div');
+      host.id = hostId;
+      host.style.position = 'fixed';
+      host.style.right = '14px';
+      host.style.bottom = '14px';
+      host.style.zIndex = '99999';
+      host.style.display = 'flex';
+      host.style.flexDirection = 'column';
+      host.style.gap = '10px';
+      document.body.appendChild(host);
+    }
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = message;
+    el.style.padding = '10px 12px';
+    el.style.borderRadius = '12px';
+    el.style.border = '1px solid rgba(255,255,255,0.14)';
+    el.style.background = 'rgba(18,22,30,0.92)';
+    el.style.color = '#fff';
+    el.style.boxShadow = '0 10px 24px rgba(0,0,0,0.28)';
+    el.style.maxWidth = '360px';
+    el.style.fontSize = '14px';
+    el.style.lineHeight = '1.25';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(8px)';
+    el.style.transition = 'opacity 140ms ease, transform 140ms ease';
+    if (type === 'warn'){ el.style.borderColor = 'rgba(255,200,80,0.35)'; }
+    if (type === 'error'){ el.style.borderColor = 'rgba(255,90,90,0.35)'; }
+    if (type === 'success'){ el.style.borderColor = 'rgba(120,255,170,0.30)'; }
+    host.appendChild(el);
+    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
+    setTimeout(() => {
+      el.style.opacity = '0'; el.style.transform = 'translateY(8px)';
+      setTimeout(() => el.remove(), 200);
+    }, Math.max(800, ms|0));
+  }catch(e){
+    // last resort
+    alert(message);
+  }
+}
 
 /* ========= Supabase ========= */
 let supabaseClient = null;
