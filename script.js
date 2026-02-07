@@ -238,7 +238,7 @@ const startOfWeek = (date) => {
   d.setDate(d.getDate() - day);
   return d;
 };
-const addDays = (date, n) => { const d=new Date(date); d.setDate(d.getDate()+n); return d; };
+// NOTE: addDays is defined above as a function. Avoid redeclaring it.
 const sameISO = (a,b) => String(a||'')===String(b||'');
 const zipFromAddress = (addr) => {
   const s = String(addr||'');
@@ -2365,12 +2365,9 @@ async function openOrderInRoute(orderId){
   let ord = (state.orders||[]).find(o=>String(o.id)===String(orderId));
   if (!ord) return toast('Order not found', 'warn');
 
-  // If unassigned, auto-group its bucket so it lands on a route
-  if (!ord.route_id && state.supportsRoutes && state.supportsOrdersRouteId){
-    await autoGroupOrdersIntoRoutes({ focusOrderId: orderId, silent: true });
-    await refreshAll(false);
-    ord = (state.orders||[]).find(o=>String(o.id)===String(orderId));
-  }
+  // IMPORTANT: Do NOT auto-assign orders to routes when deep-linking.
+  // If the order is unassigned, we still take the user to Routes so they can
+  // manually pick a route and add it (it will be pre-checked in the Add Orders list).
 
   switchView('routesView');
 
