@@ -337,6 +337,9 @@ function orderHasAnyAssignment(orderId){
 }
 
 function stageLabelForOrder(order){
+  const life = String(order?.status || '').toLowerCase();
+  if (order?.is_deleted === true) return 'archived';
+  if (life.startsWith('cancelled')) return 'cancelled';
   // ROUTE-FIRST STATUS (no editable status):
   // 1) Deposited (paid) → 2) On route (route_id set) → 3) Route active (route.status === 'active')
   const st = String(order?.status || order?.payment_status || '').toLowerCase();
@@ -582,6 +585,7 @@ function wireUI(){
   on('mapCadence', 'change', () => renderMap());
   on('mapStatus', 'change', () => renderMap());
   on('ordersStatus', 'change', () => renderOrders());
+  on('ordersShowArchived', 'change', () => renderOrders());
   on('ordersSearch', 'input', () => renderOrders());
   on('homeCadence', 'change', () => renderHome());
   on('homeAge', 'change', () => renderHome());
@@ -785,6 +789,8 @@ function hydrateFilters(){
       ['on route','on route'],
       ['route active','route active'],
       ['needs deposit','needs deposit'],
+      ['cancelled','cancelled'],
+      ['archived','archived'],
     ];
     for (const [label,val] of opts) status.append(new Option(label,val));
     status.value = current;
@@ -1420,7 +1426,8 @@ function renderDayAssignBoard(){
 
   // Show only relevant orders (ignore cancelled)
   const visibleAll = state.orders
-    .filter(o => !['cancelled'].includes(String(o.status||'').toLowerCase()))
+    .filter(o => o?.is_deleted !== true)
+    .filter(o => !String(o.status||'').toLowerCase().startsWith('cancelled'))
     .slice(0, 500);
 
   const visible = focusId ? visibleAll.filter(o => String(o.id) === String(focusId)) : visibleAll;
@@ -1688,9 +1695,11 @@ function renderOrders(){
   if (!wrap) return;
 
   const status = $('ordersStatus')?.value || 'all';
+  const showArchived = $('ordersShowArchived')?.checked === true;
   const q = String($('ordersSearch')?.value || '').toLowerCase();
 
   let rows = state.orders.slice();
+  if (!showArchived) rows = rows.filter(o => o?.is_deleted !== true);
   if (status !== 'all') rows = rows.filter(o => stageLabelForOrder(o) === status);
   if (q) rows = rows.filter(o =>
     String(o.biz_name||o.business_name||'').toLowerCase().includes(q) ||
@@ -1721,7 +1730,8 @@ function renderOrders(){
       <td>${escapeHtml(stageLabelForOrder(o))}</td>
       <td>
         <button class="btn btn-mini ghost" data-act="route">Open route</button>
-        <button class="btn btn-mini outline" data-act="delete">Delete</button>
+        <button class="btn btn-mini" data-act="cancel">Cancel</button>
+        <button class="btn btn-mini outline" data-act="archive">Archive</button>
       </td>
     </tr>`);
   }
@@ -1735,14 +1745,71 @@ function renderOrders(){
       if (!orderId) return;
       const act = btn.dataset.act;
       if (act === 'route') return openOrderInRoute(orderId);
-      if (act === 'delete') return deleteOrder(orderId);
+      if (act === 'cancel') return cancelOrder(orderId);
+      if (act === 'archive') return archiveOrder(orderId);
     });
   });
 }
 
-async function deleteOrder(orderId){
-  if (!confirm('Delete this order? This cannot be undone.')) return;
-  const { error } = await supabaseClient.from('orders').delete().eq('id', orderId);
+async function archiveOrder(orderId){
+  if (!confirm('Archive this order? It will be hidden from the dashboard unless “Show archived” is enabled.')) return;
+  const patch = { is_deleted: true, deleted_at: new Date().toISOString() };
+  // Keep status as-is unless it's empty
+  const o = state.orders.find(x => String(x.id) === String(orderId));
+  if (o && !o.status) patch.status = 'archived';
+  const { error } = await supabaseClient.from('orders').update(patch).eq('id', orderId);
+  if (error) return showBanner(fmtSbError(error));
+  toast('Order archived','ok');
+  await refreshAll(false);
+}
+
+async function cancelOrder(orderId){
+  const o = state.orders.find(x => String(x.id) === String(orderId));
+  if (!o) return;
+
+  // Infer cancel mode
+  let mode = 'before_start';
+  const rid = o.route_id;
+  if (rid){
+    const r = (state.routes||[]).find(x => x.id === rid);
+    const start = r?.service_start_date ? String(r.service_start_date).slice(0,10) : '';
+    const today = toISODate(new Date());
+    if (start && today >= start) mode = 'after_start';
+  }
+
+  if (!confirm(`Cancel this order (${mode.replace('_',' ')})? Deposit is forfeited if cancelled before route begins.`)) return;
+
+  // If we have an API configured, cancel Stripe subscription via intake API.
+  const apiBase = localStorage.getItem('PROCAN_API_BASE') || '';
+  const token = localStorage.getItem('PROCAN_ROUTE_TOKEN') || '';
+  if (apiBase && token){
+    try{
+      const resp = await fetch(apiBase.replace(/\/$/,'') + '/api/order-cancel', {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':`Bearer ${token}`
+        },
+        body: JSON.stringify({ order_id: orderId, mode })
+      });
+      const data = await resp.json().catch(()=>null);
+      if (!resp.ok){
+        toast(data?.error || 'Cancel failed','bad');
+        return;
+      }
+      toast('Order cancelled','ok');
+    }catch(e){
+      toast('Cancel failed: ' + (e?.message||e),'bad');
+      return;
+    }
+  } else {
+    // Fallback: Supabase only (does not touch Stripe)
+    toast('No API configured; cancelling in Supabase only (Stripe not updated).','warn',3600);
+  }
+
+  // Update Supabase order status
+  const status = (mode === 'after_start') ? 'cancelled_active' : 'cancelled_before_start';
+  const { error } = await supabaseClient.from('orders').update({ status, cancelled_at: new Date().toISOString() }).eq('id', orderId);
   if (error) return showBanner(fmtSbError(error));
   await refreshAll(false);
 }

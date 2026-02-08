@@ -297,7 +297,10 @@
 <div class="filters">
 <select id="ordersStatus"></select>
 <input id="ordersSearch" placeholder="Search business / address…" type="search"/>
-<button class="btn ghost" id="btnAutoGroupRoutesFromOrders">Auto‑group to routes</button>
+<label class="chip" style="display:flex;align-items:center;gap:8px;user-select:none;">
+  <input type="checkbox" id="ordersShowArchived" />
+  <span>Show archived</span>
+</label>
 </div>
 </div>
 <div class="table" id="ordersTable"></div>

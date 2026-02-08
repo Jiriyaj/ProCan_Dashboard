@@ -71,6 +71,12 @@ ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS last_service_date date,           -- updated when a job is completed
   ADD COLUMN IF NOT EXISTS route_operator_id uuid;           -- preferred operator for this route/order
 
+-- Orders: lifecycle (prevent "zombie" re-creates from webhooks)
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS is_deleted boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS deleted_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz;
+
 
 
 -- 5) ROUTE-FIRST: routes table + orders.route_id
@@ -130,3 +136,9 @@ alter table public.orders
 alter table public.orders
   add column if not exists service_frequency text,
   add column if not exists billing_interval text;
+
+-- Order lifecycle (prevents "zombie" orders reappearing)
+alter table public.orders
+  add column if not exists is_deleted boolean not null default false,
+  add column if not exists deleted_at timestamptz,
+  add column if not exists cancelled_at timestamptz;
