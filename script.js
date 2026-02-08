@@ -2084,7 +2084,7 @@ async function loadRoutes(){
   state.routes = [];
   if (!state.supportsRoutes) return;
   const { data, error } = await supabaseClient.from('routes')
-    .select('id,name,service_day,status,target_cans,operator_id,created_at')
+    .select('id,name,service_day,status,target_cans,operator_id,created_at,service_start_date,cadence,last_service_date')
     .order('created_at', { ascending:false });
   if (error) { console.warn('loadRoutes', error); return; }
   state.routes = data || [];
