@@ -1779,32 +1779,27 @@ async function cancelOrder(orderId){
 
   if (!confirm(`Cancel this order (${mode.replace('_',' ')})? Deposit is forfeited if cancelled before route begins.`)) return;
 
-  // If we have an API configured, cancel Stripe subscription via intake API.
-  const apiBase = localStorage.getItem('PROCAN_API_BASE') || '';
-  const token = localStorage.getItem('PROCAN_ROUTE_TOKEN') || '';
-  if (apiBase && token){
+  // Cancel Stripe subscription via same-origin /api (secured by PROCAN_ROUTE_TOKEN).
+  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
+  if (token){
     try{
-      const resp = await fetch(apiBase.replace(/\/$/,'') + '/api/order-cancel', {
+      const resp = await fetch('/api/order-cancel', {
         method:'POST',
         headers:{
           'Content-Type':'application/json',
-          'Authorization':`Bearer ${token}`
+          'Authorization':'Bearer ' + token
         },
-        body: JSON.stringify({ order_id: orderId, mode })
+        body: JSON.stringify({ order_id: o.id, mode })
       });
-      const data = await resp.json().catch(()=>null);
+      const data = await resp.json().catch(()=> ({}));
       if (!resp.ok){
-        toast(data?.error || 'Cancel failed','bad');
-        return;
+        toast('Stripe cancel failed: ' + (data.error || resp.status), 'warn');
       }
-      toast('Order cancelled','ok');
     }catch(e){
-      toast('Cancel failed: ' + (e?.message||e),'bad');
-      return;
+      toast('Stripe cancel failed to fetch', 'warn');
     }
   } else {
-    // Fallback: Supabase only (does not touch Stripe)
-    toast('No API configured; cancelling in Supabase only (Stripe not updated).','warn',3600);
+    toast('Cancelled locally (no PROCAN_ROUTE_TOKEN set to cancel Stripe).', 'warn');
   }
 
   // Update Supabase order status
@@ -2730,12 +2725,29 @@ async function scheduleRouteStart(){
   renderRoutes();
   renderRouteDetails();
 
-  // Optional: call backend to sync Stripe subscription trial_end + apply deposit credit.
-  const base = (PROCAN_API_BASE || '');
-  if (!base){
-    toast('Route scheduled. Set PROCAN_API_BASE (intake domain) to sync billing.', 'ok');
+  // Optional: call backend (same-origin /api) to sync Stripe subscription trial_end + apply deposit credit.
+  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
+  if (!token){
+    toast('Route scheduled. Set PROCAN_ROUTE_TOKEN to sync billing.', 'ok');
     return;
   }
+
+  try{
+    const resp = await fetch('/api/schedule-route', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
+    });
+    const data = await resp.json().catch(()=> ({}));
+    if (!resp.ok){
+      toast('Billing sync failed: ' + (data.error || resp.status), 'warn');
+      return;
+    }
+    toast('Route scheduled + billing synced', 'ok');
+  }catch(err){
+    toast('Billing sync failed to fetch', 'warn');
+  }
+}
   const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
   if (!token){
     toast('Route scheduled. Set PROCAN_ROUTE_TOKEN in localStorage to sync billing.', 'ok');

@@ -1,0 +1,7 @@
+{
+  "name": "procan-dashboard",
+  "private": true,
+  "dependencies": {
+    "stripe": "^14.0.0"
+  }
+}
