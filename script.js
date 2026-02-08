@@ -2748,28 +2748,6 @@ async function scheduleRouteStart(){
     toast('Billing sync failed to fetch', 'warn');
   }
 }
-  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
-  if (!token){
-    toast('Route scheduled. Set PROCAN_ROUTE_TOKEN in localStorage to sync billing.', 'ok');
-    return;
-  }
-
-  try{
-    const resp = await fetch(base.replace(/\/$/,'') + '/api/schedule-route', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
-    });
-    const data = await resp.json().catch(()=> ({}));
-    if (!resp.ok){
-      toast(data?.error || 'Billing sync failed', 'warn');
-      return;
-    }
-    toast('Billing synced for route', 'ok');
-  }catch(e){
-    toast('Billing sync failed: ' + (e?.message||e), 'warn');
-  }
-}
 
 async function deleteRoute(){
   const rid = state.selectedRouteId;
