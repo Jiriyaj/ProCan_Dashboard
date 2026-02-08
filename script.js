@@ -1655,6 +1655,7 @@ function printSchedulePDF(){
       .muted{color:#666;}
     </style>
     </head><body>
+      <div class="brand">ProCan Sanitation LLC</div>
       <h1>${escapeHtml(title)}</h1>
       <p class="sub">Generated from ProCan dashboard</p>
       <table>
@@ -2571,6 +2572,8 @@ async function printRoutePDF(){
         .badge.due{ background:#dcfce7; color:#166534; }
         .badge.skip{ background:#fee2e2; color:#991b1b; }
         .muted{ color:#6b7280; font-size:12px; }
+        .brand{ font-size:12px; color:#111827; letter-spacing:.12em; text-transform:uppercase; text-align:right; margin-bottom:10px; }
+        .footer{ margin-top:16px; color:#6b7280; font-size:11px; display:flex; justify-content:space-between; }
       </style>
     </head>
     <body>
@@ -2594,6 +2597,11 @@ async function printRoutePDF(){
           ${stopsHtml}
         </tbody>
       </table>
+
+      <div class="footer">
+        <div>ProCan Sanitation LLC</div>
+        <div class="muted">Generated: ${escapeHtml(fmtDateLong(new Date()))}</div>
+      </div>
       <script>window.print();<\/script>
     </body>
     </html>
