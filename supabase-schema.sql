@@ -142,3 +142,66 @@ alter table public.orders
   add column if not exists is_deleted boolean not null default false,
   add column if not exists deleted_at timestamptz,
   add column if not exists cancelled_at timestamptz;
+
+
+-- 6) SERVICE CONFIRMATION: route_runs + route_run_stops
+--    A "run" represents one service date for a route.
+--    Stops are the orders that should be serviced for that run.
+
+CREATE TABLE IF NOT EXISTS public.route_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  route_id uuid NOT NULL REFERENCES public.routes(id) ON DELETE CASCADE,
+  service_date date NOT NULL,
+  status text NOT NULL DEFAULT 'in_progress', -- in_progress|completed
+  started_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  created_by uuid
+);
+
+ALTER TABLE public.route_runs
+  ADD CONSTRAINT IF NOT EXISTS route_runs_route_id_service_date_key UNIQUE (route_id, service_date);
+
+CREATE INDEX IF NOT EXISTS idx_route_runs_route_date ON public.route_runs(route_id, service_date);
+
+
+CREATE TABLE IF NOT EXISTS public.route_run_stops (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  run_id uuid NOT NULL REFERENCES public.route_runs(id) ON DELETE CASCADE,
+  order_id uuid NOT NULL REFERENCES public.orders(id) ON DELETE RESTRICT,
+  stop_order integer NOT NULL DEFAULT 0,
+  arrived boolean NOT NULL DEFAULT false,
+  cleaned boolean NOT NULL DEFAULT false,
+  photo_before boolean NOT NULL DEFAULT false,
+  photo_after boolean NOT NULL DEFAULT false,
+  completed boolean NOT NULL DEFAULT false,
+  completed_at timestamptz,
+  notes text
+);
+
+ALTER TABLE public.route_run_stops
+  ADD CONSTRAINT IF NOT EXISTS route_run_stops_run_order_key UNIQUE (run_id, order_id);
+
+CREATE INDEX IF NOT EXISTS idx_route_run_stops_run_order ON public.route_run_stops(run_id, stop_order);
+
+
+-- RLS (authenticated only) — matches the rest of the dashboard model
+ALTER TABLE public.route_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.route_run_stops ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='route_runs' AND policyname='route_runs_authed_all') THEN
+    CREATE POLICY route_runs_authed_all ON public.route_runs
+      FOR ALL USING (auth.role() = 'authenticated')
+      WITH CHECK (auth.role() = 'authenticated');
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='route_run_stops' AND policyname='route_run_stops_authed_all') THEN
+    CREATE POLICY route_run_stops_authed_all ON public.route_run_stops
+      FOR ALL USING (auth.role() = 'authenticated')
+      WITH CHECK (auth.role() = 'authenticated');
+  END IF;
+END $$;
+

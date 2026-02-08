@@ -11,9 +11,25 @@ async function probeSchema(){
       state.supportsOrdersRouteId = true;
     }
   }catch(e){}
+
+  // Detect service confirmation tables (route_runs + route_run_stops)
+  try{
+    const rr = await supabaseClient.from('route_runs').select('id').limit(1);
+    if (!rr.error) state.supportsRouteRuns = true;
+  }catch(e){}
+  try{
+    const rs = await supabaseClient.from('route_run_stops').select('id').limit(1);
+    if (!rs.error) state.supportsRouteRunStops = true;
+  }catch(e){}
+
   const notice = document.getElementById('routesSchemaNotice');
   if (notice){
     notice.style.display = (state.supportsRoutes && state.supportsOrdersRouteId) ? 'none' : 'block';
+  }
+
+  const runNotice = document.getElementById('runsSchemaNotice');
+  if (runNotice){
+    runNotice.style.display = (state.supportsRouteRuns && state.supportsRouteRunStops) ? 'none' : 'block';
   }
 }
 
@@ -458,9 +474,16 @@ const state = {
   // Route-first support flags (set after schema probe)
   supportsRoutes: false,
   supportsOrdersRouteId: false,
+  supportsRouteRuns: false,
+  supportsRouteRunStops: false,
   selectedRouteId: null,
   routes: [],
   routesWeek: 'all',
+
+  // Service confirmation (route runs)
+  activeRun: null,
+  activeRunStops: [],
+  activeRunDate: null,
 
   view: 'homeView',
   weekStart: startOfWeek(new Date()),
@@ -534,6 +557,11 @@ function wireUI(){
   on('btnAutoGroupRoutes','click', async ()=>{ await autoGroupOrdersIntoRoutes(); });
   on('btnAddSelectedToRoute','click', async ()=>{ await addSelectedOrdersToRoute(); });
   on('routeAddSearch','input', ()=>{ renderRouteAddList(); });
+
+  // Service confirmation (route runs)
+  on('runDate','change', async ()=>{ await loadAndRenderActiveRun(); });
+  on('btnStartRun','click', async ()=>{ await startRouteRun(); });
+  on('btnCompleteRun','click', async ()=>{ await completeRouteRun(); });
 
   on('btnRefresh', 'click', async () => { await refreshAll(true); });
   on('scheduleRoute','change', () => renderSchedule());
@@ -2282,6 +2310,310 @@ function renderRouteDetails(){
 
   // Refresh "Add orders" list under the editor
   renderRouteAddList();
+
+  // Service confirmation panel
+  renderRouteRunPanel(r);
+}
+
+
+/* ========= Service confirmation (route runs) ========= */
+function defaultRunDateForRoute(route){
+  const nd = computeNextServiceDates(route);
+  const d = nd.next || new Date();
+  return toISODate(d);
+}
+
+function renderRouteRunPanel(route){
+  const controls = document.getElementById('runControls');
+  const stopsList = document.getElementById('runStopsList');
+  const runDate = document.getElementById('runDate');
+  const statusText = document.getElementById('runStatusText');
+
+  if (!controls || !stopsList || !runDate || !statusText) return;
+
+  // If schema missing, hide run UI entirely (notice is handled in probeSchema)
+  if (!(state.supportsRouteRuns && state.supportsRouteRunStops)){
+    controls.style.display = 'none';
+    stopsList.style.display = 'none';
+    return;
+  }
+
+  controls.style.display = 'flex';
+  stopsList.style.display = 'block';
+
+  // Choose a default run date if none set
+  if (!state.activeRunDate){
+    state.activeRunDate = defaultRunDateForRoute(route);
+  }
+  runDate.value = state.activeRunDate;
+
+  // Load + render
+  loadAndRenderActiveRun();
+}
+
+async function loadAndRenderActiveRun(){
+  const rid = state.selectedRouteId;
+  const runDate = document.getElementById('runDate')?.value;
+  if (!rid || !runDate) return;
+  state.activeRunDate = runDate;
+
+  // Load run
+  const runRes = await supabaseClient
+    .from('route_runs')
+    .select('*')
+    .eq('route_id', rid)
+    .eq('service_date', runDate)
+    .limit(1)
+    .maybeSingle();
+
+  if (runRes.error && runRes.error.code !== 'PGRST116'){
+    console.warn('load route_runs', runRes.error);
+  }
+  state.activeRun = runRes.data || null;
+
+  // Load stops (if run exists)
+  state.activeRunStops = [];
+  if (state.activeRun?.id){
+    const stopsRes = await supabaseClient
+      .from('route_run_stops')
+      .select('*')
+      .eq('run_id', state.activeRun.id)
+      .order('stop_order', { ascending:true });
+    if (!stopsRes.error) state.activeRunStops = stopsRes.data || [];
+  }
+
+  renderActiveRunUI();
+}
+
+function renderActiveRunUI(){
+  const statusText = document.getElementById('runStatusText');
+  const stopsList = document.getElementById('runStopsList');
+  const btnStart = document.getElementById('btnStartRun');
+  const btnComplete = document.getElementById('btnCompleteRun');
+  if (!statusText || !stopsList || !btnStart || !btnComplete) return;
+
+  const run = state.activeRun;
+  const isCompleted = run && String(run.status) === 'completed';
+
+  if (!run){
+    statusText.innerHTML = `<span class="tag warn">Not started</span> Create a run for this date to begin.`;
+    btnStart.disabled = false;
+    btnComplete.disabled = true;
+  } else if (isCompleted){
+    statusText.innerHTML = `<span class="tag ok">Completed</span> Run completed on ${escapeHtml(new Date(run.completed_at || run.started_at || Date.now()).toLocaleString())}`;
+    btnStart.disabled = true;
+    btnComplete.disabled = true;
+  } else {
+    statusText.innerHTML = `<span class="tag">In progress</span> Started ${escapeHtml(new Date(run.started_at || Date.now()).toLocaleString())}`;
+    btnStart.disabled = true;
+    btnComplete.disabled = false;
+  }
+
+  // Stops list
+  const rid = state.selectedRouteId;
+  const orders = (state.orders||[]).filter(o=>String(o.route_id||'')===String(rid));
+  const orderMap = new Map(orders.map(o=>[String(o.id), o]));
+
+  const stops = state.activeRunStops || [];
+
+  if (!run){
+    // preview list (what will be included) 
+    if (!orders.length){
+      stopsList.innerHTML = '<div class="muted">No orders on this route yet.</div>';
+    } else {
+      stopsList.innerHTML = orders.map((o, idx)=>{
+        const name = o.business_name||o.biz_name||o.name||'Order';
+        const addr = o.address||o.location||'';
+        return `
+          <div class="row">
+            <div class="stopMeta">
+              <div>
+                <div style="font-weight:800;">${escapeHtml(String(idx+1) + '. ' + name)}</div>
+                <div class="muted">${escapeHtml(addr)}</div>
+              </div>
+              <div class="stopMetaRight">
+                <span class="tag warn">Pending</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+    return;
+  }
+
+  if (!stops.length){
+    stopsList.innerHTML = '<div class="muted">No stops found for this run. (If this is unexpected, re-start the run.)</div>';
+    return;
+  }
+
+  stopsList.innerHTML = stops.map((s)=>{
+    const o = orderMap.get(String(s.order_id)) || {};
+    const name = o.business_name||o.biz_name||o.name||'Order';
+    const addr = o.address||o.location||'';
+    const tag = s.completed ? '<span class="tag ok">Done</span>' : '<span class="tag warn">Open</span>';
+    const dis = isCompleted ? 'disabled' : '';
+    return `
+      <div class="row" data-stop-id="${escapeHtml(s.id)}">
+        <div class="stopMeta">
+          <div>
+            <div style="font-weight:800;">${escapeHtml(String((s.stop_order||0)+1) + '. ' + name)}</div>
+            <div class="muted">${escapeHtml(addr)}</div>
+          </div>
+          <div class="stopMetaRight">
+            ${tag}
+            <label class="tag" style="cursor:pointer;">
+              <input type="checkbox" class="stopDone" ${s.completed?'checked':''} ${dis} />
+              <span>Complete</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="stopChecklist">
+          <label><input type="checkbox" class="stopChk" data-field="arrived" ${s.arrived?'checked':''} ${dis}/> Arrived</label>
+          <label><input type="checkbox" class="stopChk" data-field="cleaned" ${s.cleaned?'checked':''} ${dis}/> Cleaned</label>
+          <label><input type="checkbox" class="stopChk" data-field="photo_before" ${s.photo_before?'checked':''} ${dis}/> Photo before</label>
+          <label><input type="checkbox" class="stopChk" data-field="photo_after" ${s.photo_after?'checked':''} ${dis}/> Photo after</label>
+        </div>
+        <textarea class="stopNotes" placeholder="Notes (optional)" ${dis}>${escapeHtml(s.notes||'')}</textarea>
+      </div>
+    `;
+  }).join('');
+
+  // Wire stop events
+  Array.from(stopsList.querySelectorAll('.row[data-stop-id]')).forEach(row=>{
+    const stopId = row.getAttribute('data-stop-id');
+    const done = row.querySelector('.stopDone');
+    const note = row.querySelector('.stopNotes');
+    const checks = Array.from(row.querySelectorAll('.stopChk'));
+    if (done){
+      done.addEventListener('change', async (e)=>{
+        await updateRunStop(stopId, { completed: !!e.target.checked, completed_at: e.target.checked ? new Date().toISOString() : null });
+      });
+    }
+    for (const c of checks){
+      c.addEventListener('change', async (e)=>{
+        const field = e.target.getAttribute('data-field');
+        if (!field) return;
+        await updateRunStop(stopId, { [field]: !!e.target.checked });
+      });
+    }
+    if (note){
+      let t = null;
+      note.addEventListener('input', ()=>{
+        if (t) clearTimeout(t);
+        t = setTimeout(async ()=>{
+          await updateRunStop(stopId, { notes: note.value });
+        }, 400);
+      });
+    }
+  });
+}
+
+async function startRouteRun(){
+  const rid = state.selectedRouteId;
+  const date = document.getElementById('runDate')?.value;
+  if (!rid || !date) return;
+  if (!(state.supportsRouteRuns && state.supportsRouteRunStops)){
+    return toast('Run schema not enabled in Supabase yet', 'warn');
+  }
+
+  // If already exists, just load it
+  if (state.activeRun?.id){
+    toast('Run already started for this date', 'ok');
+    return loadAndRenderActiveRun();
+  }
+
+  const userId = cachedSession?.user?.id || null;
+  const ins = await supabaseClient
+    .from('route_runs')
+    .insert({ route_id: rid, service_date: date, status: 'in_progress', created_by: userId })
+    .select('*')
+    .single();
+  if (ins.error){
+    // Handle unique conflict: someone already created it
+    console.warn('insert route_runs', ins.error);
+    await loadAndRenderActiveRun();
+    if (state.activeRun?.id) return toast('Run loaded', 'ok');
+    return toast(fmtSbError(ins.error), 'warn');
+  }
+  state.activeRun = ins.data;
+
+  // Build stops from current route orders
+  const orders = (state.orders||[])
+    .filter(o=>String(o.route_id||'')===String(rid))
+    .filter(o=>!o.is_deleted)
+    .filter(o=>!o.cancelled_at);
+
+  const payload = orders.map((o, idx)=>({
+    run_id: state.activeRun.id,
+    order_id: o.id,
+    stop_order: idx,
+  }));
+
+  if (payload.length){
+    const st = await supabaseClient.from('route_run_stops').insert(payload).select('*');
+    if (st.error){
+      console.warn('insert route_run_stops', st.error);
+      toast('Run started, but stops failed to create. Try refreshing.', 'warn');
+    } else {
+      state.activeRunStops = st.data || [];
+    }
+  } else {
+    state.activeRunStops = [];
+  }
+
+  toast('Run started', 'ok');
+  renderActiveRunUI();
+}
+
+async function completeRouteRun(){
+  const run = state.activeRun;
+  const rid = state.selectedRouteId;
+  const date = state.activeRunDate || document.getElementById('runDate')?.value;
+  if (!run?.id || !rid || !date) return;
+
+  const upd = await supabaseClient
+    .from('route_runs')
+    .update({ status: 'completed', completed_at: new Date().toISOString() })
+    .eq('id', run.id)
+    .select('*')
+    .single();
+  if (upd.error) return toast(fmtSbError(upd.error), 'warn');
+  state.activeRun = upd.data;
+
+  // Update route.last_service_date (used for next-service computation)
+  try{
+    await supabaseClient.from('routes').update({ last_service_date: date }).eq('id', rid);
+  }catch(e){}
+
+  // Update orders.last_service_date for completed stops (or all stops if none marked)
+  const completedStops = (state.activeRunStops||[]).filter(s=>s.completed);
+  const ids = (completedStops.length ? completedStops : (state.activeRunStops||[])).map(s=>s.order_id).filter(Boolean);
+  if (ids.length){
+    try{
+      await supabaseClient.from('orders').update({ last_service_date: date }).in('id', ids);
+    }catch(e){}
+  }
+
+  toast('Run completed', 'ok');
+  await refreshAll(false);
+  await loadAndRenderActiveRun();
+}
+
+async function updateRunStop(stopId, patch){
+  if (!stopId) return;
+  const upd = await supabaseClient
+    .from('route_run_stops')
+    .update(patch)
+    .eq('id', stopId)
+    .select('*')
+    .single();
+  if (upd.error) return toast(fmtSbError(upd.error), 'warn');
+
+  const i = (state.activeRunStops||[]).findIndex(s=>String(s.id)===String(stopId));
+  if (i >= 0) state.activeRunStops[i] = upd.data;
+  renderActiveRunUI();
 }
 
 
