@@ -2324,80 +2324,227 @@ function renderRouteDetails(){
 /* ========= Service confirmation (route runs) ========= */
 function renderRouteRunsView(){
   const sel = document.getElementById('runRouteSelect');
+  const rangeSel = document.getElementById('runRange');
+  const statusSel = document.getElementById('runStatusFilter');
+  const searchEl = document.getElementById('runSearch');
+  const customWrap = document.getElementById('runRangeCustom');
+  const pane = document.getElementById('routeRunsPane');
+
   if (!sel) return;
 
+  // If schema missing, show only the notice (handled in probeSchema), hide pane.
+  if (!(state.supportsRouteRuns && state.supportsRouteRunStops)){
+    if (pane) pane.style.display = 'none';
+  }
+
   const routes = state.routes || [];
-  sel.innerHTML = routes.length
-    ? routes.map(r=>`<option value="${escapeHtml(r.id)}">${escapeHtml(r.name || '(Unnamed Route)')}</option>`).join('')
-    : '<option value="">(no routes)</option>';
+  // Allow "All routes" browsing for run history.
+  const opts = [`<option value="">All routes</option>`].concat(
+    routes.map(r=>`<option value="${escapeHtml(r.id)}">${escapeHtml(r.name || '(Unnamed Route)')}</option>`)
+  );
+  sel.innerHTML = opts.join('') || '<option value="">(no routes)</option>';
 
   // Prefer current selected route; otherwise pick first
-  const desired = state.selectedRouteId || (routes[0]?.id || '');
-  sel.value = desired;
+  const desired = (state.selectedRouteId ?? '') || '';
+  // If the previously selected route no longer exists, fall back to All routes.
+  const exists = desired && routes.some(r=>String(r.id)===String(desired));
+  sel.value = exists ? desired : '';
   state.selectedRouteId = sel.value || null;
 
-  sel.onchange = ()=>{
-    state.selectedRouteId = sel.value || null;
-    // Reset run date when switching routes so the default is computed per-route
+  // Init filters
+  state.runFilters = state.runFilters || { range:'week', status:'all', from:null, to:null };
+  if (rangeSel) rangeSel.value = state.runFilters.range || 'week';
+  if (statusSel) statusSel.value = state.runFilters.status || 'all';
+  if (customWrap) customWrap.style.display = (rangeSel && rangeSel.value==='custom') ? 'flex' : 'none';
+
+  const wire = ()=>{
+    // When switching routes, reset active date to computed default.
     state.activeRunDate = null;
     state.activeRun = null;
     state.activeRunStops = [];
     const r = (state.routes||[]).find(x=>String(x.id)===String(state.selectedRouteId));
     if (r) renderRouteRunPanel(r);
-    loadAndRenderRunHistory();
+    loadAndRenderRunList();
   };
+
+  sel.onchange = ()=>{
+    state.selectedRouteId = sel.value || null;
+    wire();
+  };
+
+  if (rangeSel){
+    rangeSel.onchange = ()=>{
+      state.runFilters.range = rangeSel.value;
+      if (customWrap) customWrap.style.display = rangeSel.value==='custom' ? 'flex' : 'none';
+      loadAndRenderRunList();
+    };
+  }
+
+  if (statusSel){
+    statusSel.onchange = ()=>{
+      state.runFilters.status = statusSel.value;
+      loadAndRenderRunList();
+    };
+  }
+
+  const btnApply = document.getElementById('btnRunApply');
+  if (btnApply){
+    btnApply.onclick = ()=>{
+      state.runFilters.from = document.getElementById('runFrom')?.value || null;
+      state.runFilters.to = document.getElementById('runTo')?.value || null;
+      loadAndRenderRunList();
+    };
+  }
+
+  // Search runs (simple, server-side by reloading the list and filtering client-side)
+  state.runFilters.search = state.runFilters.search || '';
+  if (searchEl){
+    searchEl.value = state.runFilters.search;
+    let t = null;
+    searchEl.oninput = ()=>{
+      if (t) clearTimeout(t);
+      t = setTimeout(()=>{
+        state.runFilters.search = String(searchEl.value||'');
+        loadAndRenderRunList();
+      }, 150);
+    };
+  }
+
+  // Hide-completed toggle affects stop rendering only
+  const hide = document.getElementById('runHideCompleted');
+  state.runUI = state.runUI || { hideCompleted:false };
+  if (hide){
+    hide.checked = !!state.runUI.hideCompleted;
+    hide.onchange = ()=>{
+      state.runUI.hideCompleted = !!hide.checked;
+      renderActiveRunUI();
+    };
+  }
 
   const r = (state.routes||[]).find(x=>String(x.id)===String(state.selectedRouteId));
   if (r) renderRouteRunPanel(r);
-  loadAndRenderRunHistory();
+  loadAndRenderRunList();
+
+  // Show pane once schema exists
+  if (pane && (state.supportsRouteRuns && state.supportsRouteRunStops)) pane.style.display = 'grid';
 }
 
-async function loadAndRenderRunHistory(){
+function getRunDateWindow(){
+  const range = (state.runFilters?.range || 'week');
+  const today = new Date();
+  const startOfDay = (d)=> new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+  if (range === 'today'){
+    const s = startOfDay(today);
+    const e = startOfDay(new Date(today.getTime() + 24*3600*1000));
+    return { from: toISODate(s), to: toISODate(e) };
+  }
+  if (range === '30'){
+    const s = startOfDay(new Date(today.getTime() - 29*24*3600*1000));
+    const e = startOfDay(new Date(today.getTime() + 24*3600*1000));
+    return { from: toISODate(s), to: toISODate(e) };
+  }
+  if (range === 'custom'){
+    const from = state.runFilters?.from;
+    const to = state.runFilters?.to;
+    // If user didn't set, fall back to last 30 days.
+    if (from && to){
+      // make "to" inclusive by adding 1 day
+      const td = new Date(to + 'T00:00:00');
+      const e = new Date(td.getTime() + 24*3600*1000);
+      return { from, to: toISODate(e) };
+    }
+    const s = startOfDay(new Date(today.getTime() - 29*24*3600*1000));
+    const e = startOfDay(new Date(today.getTime() + 24*3600*1000));
+    return { from: toISODate(s), to: toISODate(e) };
+  }
+
+  // week (default): weekPicker controls the app, but Route Runs should behave predictably.
+  // Use Monday–Sunday of the week containing weekPicker date (or today).
+  const wk = document.getElementById('weekPicker')?.value ? new Date(document.getElementById('weekPicker').value+'T00:00:00') : today;
+  const dow = wk.getDay(); // 0 Sun
+  const mondayOffset = (dow === 0) ? -6 : (1 - dow);
+  const monday = startOfDay(new Date(wk.getTime() + mondayOffset*24*3600*1000));
+  const nextMon = startOfDay(new Date(monday.getTime() + 7*24*3600*1000));
+  return { from: toISODate(monday), to: toISODate(nextMon) };
+}
+
+async function loadAndRenderRunList(){
   const list = document.getElementById('runHistoryList');
   const rid = state.selectedRouteId;
+  const meta = document.getElementById('runListMeta');
   if (!list) return;
+
   if (!(state.supportsRouteRuns && state.supportsRouteRunStops)){
-    list.innerHTML = '<div class="muted">Run history unavailable until route_runs tables exist.</div>';
+    list.innerHTML = '<div class="muted">Run list unavailable until route_runs tables exist.</div>';
+    if (meta) meta.textContent = '—';
     return;
   }
-  if (!rid){
-    list.innerHTML = '<div class="muted">Select a route to view its runs.</div>';
-    return;
-  }
+  // rid === null => "All routes" view
 
-  const res = await supabaseClient
+  const win = getRunDateWindow();
+  let q = supabaseClient
     .from('route_runs')
-    .select('id,service_date,status,started_at,completed_at')
-    .eq('route_id', rid)
+    .select('id,route_id,service_date,status,started_at,completed_at')
+    .gte('service_date', win.from)
+    .lt('service_date', win.to)
     .order('service_date', { ascending:false })
-    .limit(25);
+    .limit(200);
 
+  if (rid) q = q.eq('route_id', rid);
+
+  const status = state.runFilters?.status || 'all';
+  if (status !== 'all') q = q.eq('status', status);
+
+  const res = await q;
   if (res.error){
-    console.warn('load route run history', res.error);
-    list.innerHTML = `<div class="muted">Unable to load run history: ${escapeHtml(res.error.message||'error')}</div>`;
+    console.warn('load route run list', res.error);
+    list.innerHTML = `<div class="muted">Unable to load runs: ${escapeHtml(res.error.message||'error')}</div>`;
+    if (meta) meta.textContent = 'Error';
     return;
   }
 
-  const runs = res.data || [];
+  let runs = res.data || [];
+
+  // Optional search filter (client-side)
+  const search = String(state.runFilters?.search||'').trim().toLowerCase();
+  if (search){
+    const routeName = (id)=>{
+      const r = (state.routes||[]).find(x=>String(x.id)===String(id));
+      return (r?.name||'').toLowerCase();
+    };
+    runs = runs.filter(r=>{
+      const d = String(r.service_date||'');
+      const st = String(r.status||'');
+      const rn = routeName(r.route_id);
+      return d.includes(search) || st.includes(search) || rn.includes(search);
+    });
+  }
+  if (meta){
+    const label = (state.runFilters?.range || 'week') === 'today' ? 'Today' : ((state.runFilters?.range||'week')==='30' ? 'Last 30d' : ((state.runFilters?.range||'week')==='custom' ? 'Custom' : 'This week'));
+    meta.textContent = `${runs.length} run(s) • ${label}`;
+  }
+
   if (!runs.length){
-    list.innerHTML = '<div class="muted">No runs yet for this route.</div>';
+    list.innerHTML = '<div class="muted">No runs in this window.</div>';
     return;
   }
 
   const activeDate = state.activeRunDate;
+  const activeRid = state.selectedRouteId;
   list.innerHTML = runs.map(r=>{
-    const tag = (String(r.status)==='completed')
-      ? '<span class="tag ok">Completed</span>'
-      : '<span class="tag">In progress</span>';
-    const isActive = activeDate && String(activeDate)===String(r.service_date);
+    const isCompleted = (String(r.status)==='completed');
+    const tag = isCompleted ? '<span class="tag ok">Completed</span>' : '<span class="tag">In progress</span>';
+    const isActive = activeDate && String(activeDate)===String(r.service_date) && (!r.route_id || !activeRid || String(r.route_id)===String(activeRid));
+    const rn = (!rid) ? ((state.routes||[]).find(x=>String(x.id)===String(r.route_id))?.name || 'Route') : '';
     return `
-      <div class="row ${isActive?'highlight':''}" data-run-date="${escapeHtml(r.service_date)}" style="cursor:pointer;">
-        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+      <div class="row runRow ${isActive?'highlight':''}" data-run-date="${escapeHtml(r.service_date)}" data-route-id="${escapeHtml(r.route_id||'')}" style="cursor:pointer;">
+        <div class="runRowMain">
           <div>
-            <div style="font-weight:800;">${escapeHtml(r.service_date)}</div>
-            <div class="muted">${escapeHtml(String(r.status||''))}</div>
+            <div class="runRowDate">${escapeHtml(r.service_date)}${rn ? ` <span class=\"muted\" style=\"font-weight:500;\">• ${escapeHtml(rn)}</span>` : ''}</div>
+            <div class="muted">${escapeHtml(isCompleted ? 'Completed' : 'In progress')}</div>
           </div>
-          <div class="stopMetaRight">${tag}</div>
+          <div class="runRowRight">${tag}</div>
         </div>
       </div>
     `;
@@ -2406,12 +2553,22 @@ async function loadAndRenderRunHistory(){
   Array.from(list.querySelectorAll('.row[data-run-date]')).forEach(row=>{
     row.addEventListener('click', async ()=>{
       const d = row.getAttribute('data-run-date');
+      const rrid = row.getAttribute('data-route-id') || null;
       if (!d) return;
+
+      // If viewing All routes, selecting a run should switch context to its route.
+      if (rrid && (!state.selectedRouteId || String(state.selectedRouteId)!==String(rrid))){
+        state.selectedRouteId = rrid;
+        const sel = document.getElementById('runRouteSelect');
+        if (sel) sel.value = rrid;
+        const r = (state.routes||[]).find(x=>String(x.id)===String(rrid));
+        if (r) renderRouteRunPanel(r);
+      }
       const runDateEl = document.getElementById('runDate');
       if (runDateEl) runDateEl.value = d;
       state.activeRunDate = d;
       await loadAndRenderActiveRun();
-      await loadAndRenderRunHistory();
+      await loadAndRenderRunList();
     });
   });
 }
@@ -2445,6 +2602,15 @@ function renderRouteRunPanel(route){
     state.activeRunDate = defaultRunDateForRoute(route);
   }
   runDate.value = state.activeRunDate;
+
+  // Date changes should reload the run.
+  runDate.onchange = async ()=>{
+    state.activeRunDate = runDate.value;
+    state.activeRun = null;
+    state.activeRunStops = [];
+    await loadAndRenderActiveRun();
+    await loadAndRenderRunList();
+  };
 
   // Load + render
   loadAndRenderActiveRun();
@@ -2489,10 +2655,22 @@ function renderActiveRunUI(){
   const stopsList = document.getElementById('runStopsList');
   const btnStart = document.getElementById('btnStartRun');
   const btnComplete = document.getElementById('btnCompleteRun');
+  const progressText = document.getElementById('runProgressText');
+  const progressBar = document.getElementById('runProgressBar');
   if (!statusText || !stopsList || !btnStart || !btnComplete) return;
 
   const run = state.activeRun;
   const isCompleted = run && String(run.status) === 'completed';
+
+  // Progress
+  const stopsForProgress = (state.activeRunStops||[]);
+  const totalStops = stopsForProgress.length;
+  const doneStops = stopsForProgress.filter(s=>s.completed).length;
+  if (progressText) progressText.textContent = totalStops ? `Stops completed: ${doneStops} / ${totalStops}` : '—';
+  if (progressBar){
+    const pct = totalStops ? Math.round((doneStops/totalStops)*100) : 0;
+    progressBar.style.width = pct + '%';
+  }
 
   if (!run){
     statusText.innerHTML = `<span class="tag warn">Not started</span> Create a run for this date to begin.`;
@@ -2514,9 +2692,21 @@ function renderActiveRunUI(){
   const orderMap = new Map(orders.map(o=>[String(o.id), o]));
 
   const stops = state.activeRunStops || [];
+  let stopsToRender = stops.slice();
+  // Optional UI filter
+  if (state.runUI?.hideCompleted){
+    stopsToRender = stopsToRender.filter(s=>!s.completed);
+  }
+  // Always show incomplete first
+  stopsToRender.sort((a,b)=>{
+    const ac = a.completed?1:0;
+    const bc = b.completed?1:0;
+    if (ac!==bc) return ac-bc;
+    return (a.stop_order||0) - (b.stop_order||0);
+  });
 
   if (!run){
-    // preview list (what will be included) 
+    // preview list (what will be included)
     if (!orders.length){
       stopsList.innerHTML = '<div class="muted">No orders on this route yet.</div>';
     } else {
@@ -2524,15 +2714,13 @@ function renderActiveRunUI(){
         const name = o.business_name||o.biz_name||o.name||'Order';
         const addr = o.address||o.location||'';
         return `
-          <div class="row">
-            <div class="stopMeta">
+          <div class="stopRow compact">
+            <div class="stopRowMain">
               <div>
-                <div style="font-weight:800;">${escapeHtml(String(idx+1) + '. ' + name)}</div>
-                <div class="muted">${escapeHtml(addr)}</div>
+                <div class="stopTitle">${escapeHtml(String(idx+1) + '. ' + name)}</div>
+                <div class="muted stopAddr">${escapeHtml(addr)}</div>
               </div>
-              <div class="stopMetaRight">
-                <span class="tag warn">Pending</span>
-              </div>
+              <div class="stopRight"> <span class="tag warn">Pending</span> </div>
             </div>
           </div>
         `;
@@ -2546,41 +2734,49 @@ function renderActiveRunUI(){
     return;
   }
 
-  stopsList.innerHTML = stops.map((s)=>{
+  if (!stopsToRender.length){
+    stopsList.innerHTML = '<div class="muted">All stops are completed.</div>';
+    return;
+  }
+
+  stopsList.innerHTML = stopsToRender.map((s)=>{
     const o = orderMap.get(String(s.order_id)) || {};
     const name = o.business_name||o.biz_name||o.name||'Order';
     const addr = o.address||o.location||'';
     const tag = s.completed ? '<span class="tag ok">Done</span>' : '<span class="tag warn">Open</span>';
     const dis = isCompleted ? 'disabled' : '';
+    const expanded = s.completed ? '' : 'open';
     return `
-      <div class="row" data-stop-id="${escapeHtml(s.id)}">
-        <div class="stopMeta">
+      <details class="stopRow" data-stop-id="${escapeHtml(s.id)}" ${expanded}>
+        <summary class="stopRowMain">
           <div>
-            <div style="font-weight:800;">${escapeHtml(String((s.stop_order||0)+1) + '. ' + name)}</div>
-            <div class="muted">${escapeHtml(addr)}</div>
+            <div class="stopTitle">${escapeHtml(String((s.stop_order||0)+1) + '. ' + name)}</div>
+            <div class="muted stopAddr">${escapeHtml(addr)}</div>
           </div>
-          <div class="stopMetaRight">
+          <div class="stopRight">
             ${tag}
-            <label class="tag" style="cursor:pointer;">
+            <label class="pillCheck" title="Mark stop complete">
               <input type="checkbox" class="stopDone" ${s.completed?'checked':''} ${dis} />
               <span>Complete</span>
             </label>
           </div>
-        </div>
+        </summary>
 
-        <div class="stopChecklist">
-          <label><input type="checkbox" class="stopChk" data-field="arrived" ${s.arrived?'checked':''} ${dis}/> Arrived</label>
-          <label><input type="checkbox" class="stopChk" data-field="cleaned" ${s.cleaned?'checked':''} ${dis}/> Cleaned</label>
-          <label><input type="checkbox" class="stopChk" data-field="photo_before" ${s.photo_before?'checked':''} ${dis}/> Photo before</label>
-          <label><input type="checkbox" class="stopChk" data-field="photo_after" ${s.photo_after?'checked':''} ${dis}/> Photo after</label>
+        <div class="stopRowBody">
+          <div class="stopChecklist compact">
+            <label><input type="checkbox" class="stopChk" data-field="arrived" ${s.arrived?'checked':''} ${dis}/> Arrived</label>
+            <label><input type="checkbox" class="stopChk" data-field="cleaned" ${s.cleaned?'checked':''} ${dis}/> Cleaned</label>
+            <label><input type="checkbox" class="stopChk" data-field="photo_before" ${s.photo_before?'checked':''} ${dis}/> Before</label>
+            <label><input type="checkbox" class="stopChk" data-field="photo_after" ${s.photo_after?'checked':''} ${dis}/> After</label>
+          </div>
+          <textarea class="stopNotes" placeholder="Notes (optional)" ${dis}>${escapeHtml(s.notes||'')}</textarea>
         </div>
-        <textarea class="stopNotes" placeholder="Notes (optional)" ${dis}>${escapeHtml(s.notes||'')}</textarea>
-      </div>
+      </details>
     `;
   }).join('');
 
   // Wire stop events
-  Array.from(stopsList.querySelectorAll('.row[data-stop-id]')).forEach(row=>{
+  Array.from(stopsList.querySelectorAll('.stopRow[data-stop-id]')).forEach(row=>{
     const stopId = row.getAttribute('data-stop-id');
     const done = row.querySelector('.stopDone');
     const note = row.querySelector('.stopNotes');

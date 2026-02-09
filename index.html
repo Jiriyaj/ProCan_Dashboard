@@ -295,10 +295,22 @@
     <div class="card-head">
       <div>
         <div class="card-title">Route Runs</div>
-        <div class="card-sub">Execute runs and view run history (separate from route setup).</div>
+        <div class="card-sub">Run history + stop checklist (kept separate from route setup).</div>
       </div>
       <div class="filters">
         <select id="runRouteSelect"></select>
+        <select id="runRange">
+          <option value="today">Today</option>
+          <option value="week" selected>This week</option>
+          <option value="30">Last 30 days</option>
+          <option value="custom">Custom</option>
+        </select>
+        <select id="runStatusFilter">
+          <option value="all" selected>All</option>
+          <option value="in_progress">In progress</option>
+          <option value="completed">Completed</option>
+        </select>
+        <input id="runSearch" type="search" placeholder="Search runs…" />
       </div>
     </div>
 
@@ -306,33 +318,56 @@
       Service confirmation schema not detected. Run the SQL in <b>supabase-schema.sql</b> to enable <b>route_runs</b> + <b>route_run_stops</b>.
     </div>
 
-    <div class="cardSubheader">
-      <h4>Service confirmation</h4>
-      <div class="muted">Start a run for a service date, then check off each stop as you complete it.</div>
+    <div class="runRangeCustom" id="runRangeCustom" style="display:none;">
+      <label class="field">
+        <span>From</span>
+        <input id="runFrom" type="date" />
+      </label>
+      <label class="field">
+        <span>To</span>
+        <input id="runTo" type="date" />
+      </label>
+      <button class="btn ghost" id="btnRunApply">Apply</button>
     </div>
 
-    <div class="runControls" id="runControls" style="display:none;">
-      <div class="runControlsLeft">
-        <label class="field" style="min-width:220px;">
-          <span>Run date</span>
-          <input id="runDate" type="date"/>
-        </label>
-        <div class="muted" id="runStatusText" style="margin-top:18px;"></div>
+    <div class="splitPane" id="routeRunsPane" style="display:none;">
+      <div class="paneLeft">
+        <div class="paneTitleRow">
+          <div class="paneTitle">Runs</div>
+          <div class="muted" id="runListMeta">—</div>
+        </div>
+        <div class="list" id="runHistoryList"></div>
       </div>
-      <div class="runControlsRight">
-        <button class="btn primary" id="btnStartRun">Start run</button>
-        <button class="btn outline" id="btnCompleteRun">Complete run</button>
+
+      <div class="paneRight">
+        <div class="runTop" id="runControls">
+          <div class="runTopLeft">
+            <label class="field" style="min-width:220px;">
+              <span>Run date</span>
+              <input id="runDate" type="date"/>
+            </label>
+            <div class="runStatus" id="runStatusText"></div>
+          </div>
+          <div class="runTopRight">
+            <div class="runProgress">
+              <div class="muted" id="runProgressText">—</div>
+              <div class="progressLine"><span id="runProgressBar"></span></div>
+            </div>
+            <label class="chip" style="display:flex;align-items:center;gap:8px;user-select:none;margin-top:10px;justify-content:flex-end;">
+              <input type="checkbox" id="runHideCompleted" />
+              <span>Hide completed stops</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="runStops" id="runStopsList"></div>
+
+        <div class="stickyFooter" id="runActions">
+          <button class="btn primary" id="btnStartRun">Start / Open run</button>
+          <button class="btn outline" id="btnCompleteRun">Complete run</button>
+        </div>
       </div>
     </div>
-
-    <div class="list" id="runStopsList" style="display:none;"></div>
-
-    <hr class="sep"/>
-    <div class="cardSubheader">
-      <h4>Run history</h4>
-      <div class="muted">Click a date to load that run.</div>
-    </div>
-    <div class="list" id="runHistoryList"></div>
   </div>
 </section>
 
