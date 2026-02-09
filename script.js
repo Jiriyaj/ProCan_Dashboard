@@ -672,6 +672,7 @@ function switchView(viewId){
     homeView: ['Home', 'At-a-glance ops overview'],    mapView: ['Map', 'All intake orders on the map (hover for details)'],
     ordersView: ['Orders', 'Intake orders + status'],
     routesView: ['Routes', 'Build routes first, then assign an operator'],
+    routeRunsView: ['Route Runs', 'Start/complete runs and mark stop checklists'],
     operatorsView: ['Operators', 'Manage payouts & capacity'],
   };
   const t = titles[viewId] || ['ProCan', ''];
@@ -684,6 +685,11 @@ function switchView(viewId){
       try { state.map && state.map.invalidateSize(); } catch(e){}
       renderMap();
     }, 50);
+  }
+
+  if (viewId === 'routeRunsView'){
+    // Ensure dropdown + panel are in sync
+    renderRouteRunsView();
   }
 }
 
@@ -750,6 +756,8 @@ async function refreshAll(showBannerOnErrors){
   renderOperators();
   renderRoutes();
   renderRouteDetails();
+
+  if (state.view === 'routeRunsView') renderRouteRunsView();
 
   if (state.view === 'mapView') renderMap();
 }
@@ -2310,13 +2318,104 @@ function renderRouteDetails(){
 
   // Refresh "Add orders" list under the editor
   renderRouteAddList();
-
-  // Service confirmation panel
-  renderRouteRunPanel(r);
 }
 
 
 /* ========= Service confirmation (route runs) ========= */
+function renderRouteRunsView(){
+  const sel = document.getElementById('runRouteSelect');
+  if (!sel) return;
+
+  const routes = state.routes || [];
+  sel.innerHTML = routes.length
+    ? routes.map(r=>`<option value="${escapeHtml(r.id)}">${escapeHtml(r.name || '(Unnamed Route)')}</option>`).join('')
+    : '<option value="">(no routes)</option>';
+
+  // Prefer current selected route; otherwise pick first
+  const desired = state.selectedRouteId || (routes[0]?.id || '');
+  sel.value = desired;
+  state.selectedRouteId = sel.value || null;
+
+  sel.onchange = ()=>{
+    state.selectedRouteId = sel.value || null;
+    // Reset run date when switching routes so the default is computed per-route
+    state.activeRunDate = null;
+    state.activeRun = null;
+    state.activeRunStops = [];
+    const r = (state.routes||[]).find(x=>String(x.id)===String(state.selectedRouteId));
+    if (r) renderRouteRunPanel(r);
+    loadAndRenderRunHistory();
+  };
+
+  const r = (state.routes||[]).find(x=>String(x.id)===String(state.selectedRouteId));
+  if (r) renderRouteRunPanel(r);
+  loadAndRenderRunHistory();
+}
+
+async function loadAndRenderRunHistory(){
+  const list = document.getElementById('runHistoryList');
+  const rid = state.selectedRouteId;
+  if (!list) return;
+  if (!(state.supportsRouteRuns && state.supportsRouteRunStops)){
+    list.innerHTML = '<div class="muted">Run history unavailable until route_runs tables exist.</div>';
+    return;
+  }
+  if (!rid){
+    list.innerHTML = '<div class="muted">Select a route to view its runs.</div>';
+    return;
+  }
+
+  const res = await supabaseClient
+    .from('route_runs')
+    .select('id,service_date,status,started_at,completed_at')
+    .eq('route_id', rid)
+    .order('service_date', { ascending:false })
+    .limit(25);
+
+  if (res.error){
+    console.warn('load route run history', res.error);
+    list.innerHTML = `<div class="muted">Unable to load run history: ${escapeHtml(res.error.message||'error')}</div>`;
+    return;
+  }
+
+  const runs = res.data || [];
+  if (!runs.length){
+    list.innerHTML = '<div class="muted">No runs yet for this route.</div>';
+    return;
+  }
+
+  const activeDate = state.activeRunDate;
+  list.innerHTML = runs.map(r=>{
+    const tag = (String(r.status)==='completed')
+      ? '<span class="tag ok">Completed</span>'
+      : '<span class="tag">In progress</span>';
+    const isActive = activeDate && String(activeDate)===String(r.service_date);
+    return `
+      <div class="row ${isActive?'highlight':''}" data-run-date="${escapeHtml(r.service_date)}" style="cursor:pointer;">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+          <div>
+            <div style="font-weight:800;">${escapeHtml(r.service_date)}</div>
+            <div class="muted">${escapeHtml(String(r.status||''))}</div>
+          </div>
+          <div class="stopMetaRight">${tag}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  Array.from(list.querySelectorAll('.row[data-run-date]')).forEach(row=>{
+    row.addEventListener('click', async ()=>{
+      const d = row.getAttribute('data-run-date');
+      if (!d) return;
+      const runDateEl = document.getElementById('runDate');
+      if (runDateEl) runDateEl.value = d;
+      state.activeRunDate = d;
+      await loadAndRenderActiveRun();
+      await loadAndRenderRunHistory();
+    });
+  });
+}
+
 function defaultRunDateForRoute(route){
   const nd = computeNextServiceDates(route);
   const d = nd.next || new Date();

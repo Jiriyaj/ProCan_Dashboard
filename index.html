@@ -48,6 +48,7 @@
 <button class="nav-item active" data-view="homeView">Home</button>
 <button class="nav-item" data-view="mapView">Map</button>
 <button class="nav-item" data-view="routesView">Routes</button>
+<button class="nav-item" data-view="routeRunsView">Route Runs</button>
 <button class="nav-item" data-view="ordersView">Orders</button>
 <button class="nav-item" data-view="operatorsView">Operators</button>
 </nav>
@@ -270,33 +271,6 @@
 </div>
 <div class="list" id="routeOrders"></div>
 <hr class="sep"/>
-
-<div class="notice warn" id="runsSchemaNotice" style="display:none;">
-  Service confirmation schema not detected. Run the SQL in <b>supabase-schema.sql</b> to enable <b>route_runs</b> + <b>route_run_stops</b>.
-</div>
-
-<div class="cardSubheader">
-  <h4>Service confirmation</h4>
-  <div class="muted">Start a run for a service date, then check off each stop as you complete it.</div>
-</div>
-
-<div class="runControls" id="runControls" style="display:none;">
-  <div class="runControlsLeft">
-    <label class="field" style="min-width:220px;">
-      <span>Run date</span>
-      <input id="runDate" type="date"/>
-    </label>
-    <div class="muted" id="runStatusText" style="margin-top:18px;"></div>
-  </div>
-  <div class="runControlsRight">
-    <button class="btn primary" id="btnStartRun">Start run</button>
-    <button class="btn outline" id="btnCompleteRun">Complete run</button>
-  </div>
-</div>
-
-<div class="list" id="runStopsList" style="display:none;"></div>
-
-<hr class="sep"/>
 <div class="cardSubheader">
   <h4>Add orders</h4>
   <div class="muted">Select unassigned deposited orders to add to this route.</div>
@@ -314,6 +288,54 @@
 </div>
 </div>
 </section>
+
+<!-- ROUTE RUNS -->
+<section class="view" id="routeRunsView" style="display:none;">
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">Route Runs</div>
+        <div class="card-sub">Execute runs and view run history (separate from route setup).</div>
+      </div>
+      <div class="filters">
+        <select id="runRouteSelect"></select>
+      </div>
+    </div>
+
+    <div class="notice warn" id="runsSchemaNotice" style="display:none;">
+      Service confirmation schema not detected. Run the SQL in <b>supabase-schema.sql</b> to enable <b>route_runs</b> + <b>route_run_stops</b>.
+    </div>
+
+    <div class="cardSubheader">
+      <h4>Service confirmation</h4>
+      <div class="muted">Start a run for a service date, then check off each stop as you complete it.</div>
+    </div>
+
+    <div class="runControls" id="runControls" style="display:none;">
+      <div class="runControlsLeft">
+        <label class="field" style="min-width:220px;">
+          <span>Run date</span>
+          <input id="runDate" type="date"/>
+        </label>
+        <div class="muted" id="runStatusText" style="margin-top:18px;"></div>
+      </div>
+      <div class="runControlsRight">
+        <button class="btn primary" id="btnStartRun">Start run</button>
+        <button class="btn outline" id="btnCompleteRun">Complete run</button>
+      </div>
+    </div>
+
+    <div class="list" id="runStopsList" style="display:none;"></div>
+
+    <hr class="sep"/>
+    <div class="cardSubheader">
+      <h4>Run history</h4>
+      <div class="muted">Click a date to load that run.</div>
+    </div>
+    <div class="list" id="runHistoryList"></div>
+  </div>
+</section>
+
 <section class="view" id="ordersView" style="display:none;">
 <div class="card">
 <div class="card-head">
