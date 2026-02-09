@@ -129,7 +129,7 @@ try{
         // Set trial_end to the service day so first invoice charges on service day
         await stripe.subscriptions.update(
           subId,
-          { trial_end: trialEnd, proration_behavior: 'none', cancel_at: null, cancel_at_period_end: false },
+          { trial_end: trialEnd, proration_behavior: 'none' },
           { idempotencyKey: `route_${routeId}_sub_${subId}_trialend_${serviceStartDate}` }
         );
         updatedSubs++;
