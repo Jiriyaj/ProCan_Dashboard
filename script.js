@@ -2883,6 +2883,27 @@ async function openOrderInRoute(orderId){
 
 /* ========= Route printing / PDF ========= */
 
+// --- Operator payout + duration estimates (used in print Route PDF)
+// Early adopters promo pricing (monthly price per can)
+const PRICE_PER_CAN_MONTH = 23;
+// Operator revenue share
+const OPERATOR_SHARE = 0.30;
+// Time estimate heuristic (minutes per can). Tweak as needed.
+const EST_MINUTES_PER_CAN = 2;
+
+function money(n){
+  const x = Number(n) || 0;
+  return x.toLocaleString(undefined, { style:'currency', currency:'USD' });
+}
+
+function fmtDurationFromMinutes(min){
+  const m = Math.max(0, Math.round(Number(min) || 0));
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  if (!h) return `${mm}m`;
+  return `${h}h ${String(mm).padStart(2,'0')}m`;
+}
+
 // Attempt to pull lat/lng fields from an order (supports different column names)
 function getLatLng(order){
   const lat = order.lat ?? order.latitude ?? order.geo_lat ?? order.location_lat;
@@ -3016,6 +3037,53 @@ async function printRoutePDF(){
     return true; // biweekly service
   };
 
+  // Operator payout logic:
+  // - PRICE_PER_CAN_MONTH is the monthly price per can (early adopters: $23)
+  // - Operator earns OPERATOR_SHARE of revenue
+  // - Biweekly services occur ~2x/month => payout per service is half of monthly share
+  // - Monthly services pay the full monthly share, but only when due (every other biweekly run)
+  const payoutForStopThisRun = (o) => {
+    const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
+    if (!cansN) return 0;
+    if (!isDueThisRun(o)) return 0;
+
+    const routeCadence = String(r.cadence||'biweekly').toLowerCase();
+    const f = normFreq(o);
+
+    const monthlySharePerCan = PRICE_PER_CAN_MONTH * OPERATOR_SHARE;
+
+    // If the route itself only runs monthly, everything that appears is monthly service.
+    if (routeCadence === 'monthly'){
+      return cansN * monthlySharePerCan;
+    }
+
+    // Biweekly route:
+    if (f === 'monthly'){
+      return cansN * monthlySharePerCan;
+    }
+    // Biweekly service: 2 runs per month
+    return cansN * (monthlySharePerCan / 2);
+  };
+
+  // Totals for this run
+  const totals = ordered.reduce((acc, o)=>{
+    const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
+    acc.stops += 1;
+    acc.cansAll += cansN;
+    if (isDueThisRun(o)){
+      acc.stopsDue += 1;
+      acc.cansDue += cansN;
+      acc.payout += payoutForStopThisRun(o);
+    } else {
+      acc.stopsSkip += 1;
+      acc.cansSkip += cansN;
+    }
+    return acc;
+  }, { stops:0, stopsDue:0, stopsSkip:0, cansAll:0, cansDue:0, cansSkip:0, payout:0 });
+
+  const estMinutes = totals.cansDue * EST_MINUTES_PER_CAN;
+  const estDuration = fmtDurationFromMinutes(estMinutes);
+
   const stopsHtml = ordered.map((o, idx)=>{
     const stopNum = idx + 1;
     const name = escapeHtml(o.business_name||o.biz_name||o.name||'Stop');
@@ -3023,6 +3091,7 @@ async function printRoutePDF(){
     const freq = normFreq(o);
     const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
     const due = isDueThisRun(o);
+    const pay = payoutForStopThisRun(o);
     const badge = due ? '<span class="badge due">DUE</span>' : '<span class="badge skip">SKIP</span>';
     const hint = due ? '' : ' <span class="muted">(skip this run)</span>';
 
@@ -3035,6 +3104,7 @@ async function printRoutePDF(){
         </td>
         <td>${escapeHtml(String(cansN))}</td>
         <td>${escapeHtml(freq)}</td>
+        <td>${escapeHtml(money(pay))}</td>
         <td>${hint}</td>
       </tr>
     `;
@@ -3055,6 +3125,10 @@ async function printRoutePDF(){
         .meta{ color:#4b5563; margin-bottom:14px; }
         .dates{ margin:10px 0 16px; padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; }
         .dates b{ display:inline-block; min-width:140px; }
+        .summary{ margin:0 0 16px; padding:12px; border:1px solid #e5e7eb; border-radius:10px; background:#f9fafb; }
+        .summaryGrid{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; }
+        .k{ color:#6b7280; font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+        .v{ font-weight:800; margin-top:2px; }
         table{ width:100%; border-collapse:collapse; }
         th,td{ border-bottom:1px solid #e5e7eb; padding:10px 8px; vertical-align:top; }
         th{ text-align:left; font-size:12px; color:#6b7280; letter-spacing:.04em; text-transform:uppercase; }
@@ -3076,6 +3150,36 @@ async function printRoutePDF(){
         <div><b>Service Date:</b> ${escapeHtml(fmtDateLong(serviceDate))} (${escapeHtml(serviceISO)})</div>
         <div><b>Next Service Date:</b> ${escapeHtml(next2 ? fmtDateLong(next2) : '—')} ${nextISO ? '('+escapeHtml(nextISO)+')' : ''}</div>
       </div>
+
+      <div class="summary">
+        <div class="summaryGrid">
+          <div>
+            <div class="k">Due cans (this run)</div>
+            <div class="v">${escapeHtml(String(totals.cansDue))}</div>
+          </div>
+          <div>
+            <div class="k">Operator payout (est.)</div>
+            <div class="v">${escapeHtml(money(totals.payout))}</div>
+          </div>
+          <div>
+            <div class="k">Route time (est.)</div>
+            <div class="v">${escapeHtml(estDuration)}</div>
+            <div class="muted">Assumes ${EST_MINUTES_PER_CAN} min/can</div>
+          </div>
+          <div>
+            <div class="k">Stops due</div>
+            <div class="v">${escapeHtml(String(totals.stopsDue))}</div>
+          </div>
+          <div>
+            <div class="k">Stops skipped</div>
+            <div class="v">${escapeHtml(String(totals.stopsSkip))}</div>
+          </div>
+          <div>
+            <div class="k">Pricing used</div>
+            <div class="v">$${escapeHtml(String(PRICE_PER_CAN_MONTH))}/can/mo • ${(OPERATOR_SHARE*100).toFixed(0)}%</div>
+          </div>
+        </div>
+      </div>
       <table>
         <thead>
           <tr>
@@ -3083,6 +3187,7 @@ async function printRoutePDF(){
             <th>Stop</th>
             <th>Cans</th>
             <th>Service</th>
+            <th>Payout</th>
             <th>Notes</th>
           </tr>
         </thead>
