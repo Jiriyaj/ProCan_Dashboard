@@ -2889,7 +2889,7 @@ const PRICE_PER_CAN_MONTH = 23;
 // Operator revenue share
 const OPERATOR_SHARE = 0.30;
 // Time estimate heuristic (minutes per can). Tweak as needed.
-const EST_MINUTES_PER_CAN = 2;
+const EST_MINUTES_PER_CAN = 4;
 
 function money(n){
   const x = Number(n) || 0;
@@ -3173,10 +3173,6 @@ async function printRoutePDF(){
           <div>
             <div class="k">Stops skipped</div>
             <div class="v">${escapeHtml(String(totals.stopsSkip))}</div>
-          </div>
-          <div>
-            <div class="k">Pricing used</div>
-            <div class="v">$${escapeHtml(String(PRICE_PER_CAN_MONTH))}/can/mo • ${(OPERATOR_SHARE*100).toFixed(0)}%</div>
           </div>
         </div>
       </div>
