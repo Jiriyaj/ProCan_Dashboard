@@ -43,15 +43,51 @@ const fmtMoney = (n) => {
   return v.toLocaleString('en-US', { style:'currency', currency:'USD' });
 };
 
+const getPadAddon = (o) => {
+  // Supports multiple naming conventions across versions
+  const enabled =
+    o?.pad_enabled === true ||
+    String(o?.pad_enabled || '').toLowerCase() === 'true' ||
+    o?.padEnabled === true ||
+    String(o?.padEnabled || '').toLowerCase() === 'true' ||
+    o?.pad_addon === true ||
+    String(o?.pad_addon || '').toLowerCase() === 'true';
+
+  if (!enabled) return { enabled:false, size:'', cadence:'' };
+
+  const size = String(o?.pad_size ?? o?.padSize ?? o?.pad_size_key ?? '').trim();
+  const cadence = String(o?.pad_cadence ?? o?.padCadence ?? o?.pad_frequency ?? '').trim();
+  return { enabled:true, size, cadence };
+};
+
 const padAddonLabel = (o) => {
-  const on = (o?.pad_enabled === true) || String(o?.pad_enabled || '').toLowerCase() === 'true';
-  if (!on) return '';
-  const size = String(o?.pad_size || '').trim();
-  const cad = String(o?.pad_cadence || '').trim();
+  const pad = getPadAddon(o);
+  if (!pad.enabled) return '';
   const parts = [];
-  if (size) parts.push(size);
-  if (cad) parts.push(cad);
+  if (pad.size) parts.push(pad.size);
+  if (pad.cadence) parts.push(pad.cadence);
   return parts.length ? `Pad: ${parts.join(' • ')}` : 'Pad add-on';
+};
+
+// Simple ETA model (minutes): cans + optional pad wash.
+// Tune these anytime without touching the UI.
+const estimateStopMinutes = (o) => {
+  const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
+  const minsPerCan = 2.5; // ~2–3 mins per can
+  let mins = cansN * minsPerCan;
+
+  const pad = getPadAddon(o);
+  if (pad.enabled){
+    const size = String(pad.size || '').toLowerCase();
+    const sizeMins =
+      size.includes('large') ? 20 :
+      size.includes('med')   ? 15 :
+      size.includes('small') ? 10 : 15;
+    mins += sizeMins;
+  }
+
+  // Round to nearest 5 mins for operator friendliness
+  return Math.max(5, Math.round(mins / 5) * 5);
 };
 
 const payoutToPercent = (v) => {
@@ -1714,7 +1750,7 @@ function printSchedulePDF(){
       <h1>${escapeHtml(title)}</h1>
       <p class="sub">Generated from ProCan dashboard</p>
       <table>
-        <thead><tr><th>Stop</th><th>Operator</th><th>Business</th><th>Address</th><th>Cadence</th></tr></thead>
+        <thead><tr><th>Stop</th><th>Operator</th><th>Business</th><th>Address</th><th>Cans</th><th>Add-ons</th><th>Est. mins</th><th>Cadence</th></tr></thead>
         <tbody>
           ${rows.map(a=>{
             const o = orderById.get(a.order_id) || {};
@@ -1724,6 +1760,9 @@ function printSchedulePDF(){
               <td>${escapeHtml(op.name||'Unassigned')}</td>
               <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
               <td class="muted">${escapeHtml(o.address||'')}</td>
+              <td>${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))}</td>
+              <td>${padAddonLabel(o) ? escapeHtml(padAddonLabel(o)) : '<span class="muted">—</span>'}</td>
+              <td>${escapeHtml(String(estimateStopMinutes(o)))}</td>
               <td class="muted">${escapeHtml(String(o.cadence||''))}</td>
             </tr>`;
           }).join('')}
@@ -1772,7 +1811,7 @@ function renderOrders(){
       <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(o.cadence||'')}</td>
-      <td>${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} </td>
+      <td>${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))}${padAddonLabel(o) ? `<div class="muted">${escapeHtml(padAddonLabel(o))}</div>` : ''}</td>
       <td>${escapeHtml(o.preferred_service_day||'')}</td>
       <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
       <td>${escapeHtml(stageLabelForOrder(o))}</td>
@@ -2316,7 +2355,7 @@ function renderRouteDetails(){
                 <div style="font-weight:700;">${escapeHtml(stop + '. ' + (o.business_name||o.biz_name||o.name||'Order'))}</div>
                 <div class="muted">${escapeHtml(o.address||o.location||'')}</div>
               </div>
-              <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(cadence)}</div>
+              <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(cadence)}${padAddonLabel(o) ? ' • ' + escapeHtml(padAddonLabel(o)) : ''}</div>
             </div>
           </div>
         `;
@@ -2763,7 +2802,7 @@ function renderRouteAddList(){
           <div style="font-weight:700;">${escapeHtml(name)}</div>
           <div class="muted">${escapeHtml(addr)}</div>
         </div>
-        <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(o.cadence||'')}</div>
+        <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(o.cadence||'')}${padAddonLabel(o) ? ' • ' + escapeHtml(padAddonLabel(o)) : ''}</div>
       </label>
     `;
   }).join('');
@@ -3047,6 +3086,8 @@ async function printRoutePDF(){
           <div class="sub">${addr}</div>
         </td>
         <td>${escapeHtml(String(cansN))}</td>
+        <td>${padAddonLabel(o) ? escapeHtml(padAddonLabel(o)) : '<span class="muted">—</span>'}</td>
+        <td>${escapeHtml(String(estimateStopMinutes(o)))}</td>
         <td>${escapeHtml(freq)}</td>
         <td>${hint}</td>
       </tr>
@@ -3095,6 +3136,8 @@ async function printRoutePDF(){
             <th>#</th>
             <th>Stop</th>
             <th>Cans</th>
+            <th>Add-ons</th>
+            <th>Est. mins</th>
             <th>Service</th>
             <th>Notes</th>
           </tr>
