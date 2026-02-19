@@ -51,12 +51,19 @@ const getPadAddon = (o) => {
     o?.padEnabled === true ||
     String(o?.padEnabled || '').toLowerCase() === 'true' ||
     o?.pad_addon === true ||
-    String(o?.pad_addon || '').toLowerCase() === 'true';
+    String(o?.pad_addon || '').toLowerCase() === 'true' ||
+    o?.padAddon === true ||
+    String(o?.padAddon || '').toLowerCase() === 'true' ||
+    o?.addons?.pad === true ||
+    o?.addons?.padAddon === true ||
+    String(o?.addons?.padAddon || '').toLowerCase() === 'true' ||
+    o?.metadata?.padAddon === true ||
+    String(o?.metadata?.padAddon || '').toLowerCase() === 'true';
 
   if (!enabled) return { enabled:false, size:'', cadence:'' };
 
-  const size = String(o?.pad_size ?? o?.padSize ?? o?.pad_size_key ?? '').trim();
-  const cadence = String(o?.pad_cadence ?? o?.padCadence ?? o?.pad_frequency ?? '').trim();
+  const size = String(o?.pad_size ?? o?.padSize ?? o?.pad_size_key ?? o?.addons?.padSize ?? o?.metadata?.padSize ?? '').trim();
+  const cadence = String(o?.pad_cadence ?? o?.padCadence ?? o?.pad_frequency ?? o?.addons?.padCadence ?? o?.metadata?.padCadence ?? '').trim();
   return { enabled:true, size, cadence };
 };
 
@@ -2581,6 +2588,7 @@ function renderActiveRunUI(){
               <div>
                 <div style="font-weight:800;">${escapeHtml(String(idx+1) + '. ' + name)}</div>
                 <div class="muted">${escapeHtml(addr)}</div>
+                <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(String(o.cadence||o.service_frequency||''))}${padAddonLabel(o)?' • '+escapeHtml(padAddonLabel(o)):''} • Est. ${escapeHtml(String(estimateStopMinutes(o)))} min</div>
               </div>
               <div class="stopMetaRight">
                 <span class="tag warn">Pending</span>
@@ -2610,6 +2618,7 @@ function renderActiveRunUI(){
           <div>
             <div style="font-weight:800;">${escapeHtml(String((s.stop_order||0)+1) + '. ' + name)}</div>
             <div class="muted">${escapeHtml(addr)}</div>
+            <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(String(o.cadence||o.service_frequency||''))}${padAddonLabel(o)?' • '+escapeHtml(padAddonLabel(o)):''} • Est. ${escapeHtml(String(estimateStopMinutes(o)))} min</div>
           </div>
           <div class="stopMetaRight">
             ${tag}
