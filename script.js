@@ -43,60 +43,57 @@ const fmtMoney = (n) => {
   return v.toLocaleString('en-US', { style:'currency', currency:'USD' });
 };
 
-const getPadAddon = (o) => {
-  // Supports multiple naming conventions across versions
-  const enabled =
+// ---- Service helpers (cans + pad washing) ----
+function getCansCount(o){
+  const n = parseInt(String(o?.cans ?? o?.can_count ?? o?.qty ?? o?.quantity ?? ''), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getPadInfo(o){
+  // Support multiple shapes/legacy names
+  const enabled = (
     o?.pad_enabled === true ||
-    String(o?.pad_enabled || '').toLowerCase() === 'true' ||
-    o?.padEnabled === true ||
-    String(o?.padEnabled || '').toLowerCase() === 'true' ||
-    o?.pad_addon === true ||
-    String(o?.pad_addon || '').toLowerCase() === 'true' ||
+    String(o?.pad_enabled||'').toLowerCase()==='true' ||
     o?.padAddon === true ||
-    String(o?.padAddon || '').toLowerCase() === 'true' ||
-    o?.addons?.pad === true ||
-    o?.addons?.padAddon === true ||
-    String(o?.addons?.padAddon || '').toLowerCase() === 'true' ||
-    o?.metadata?.padAddon === true ||
-    String(o?.metadata?.padAddon || '').toLowerCase() === 'true';
+    o?.pad_addon === true ||
+    String(o?.pad_addon||'').toLowerCase()==='true' ||
+    (o?.metadata && (o.metadata.padAddon || o.metadata.pad_enabled)) ||
+    (o?.addons && o.addons.padAddon)
+  );
+  const size = String(o?.pad_size ?? o?.padSize ?? (o?.metadata?.padSize) ?? '').trim();
+  const cadence = String(o?.pad_cadence ?? o?.padCadence ?? (o?.metadata?.padCadence) ?? '').trim();
+  return { enabled: !!enabled, size: size || null, cadence: cadence || null };
+}
 
-  if (!enabled) return { enabled:false, size:'', cadence:'' };
+function padLabel(o){
+  const p = getPadInfo(o);
+  if (!p.enabled) return '';
+  const bits = [];
+  if (p.size) bits.push(p.size);
+  if (p.cadence) bits.push(p.cadence);
+  return bits.length ? `Pad: ${bits.join(' • ')}` : 'Pad: Yes';
+}
 
-  const size = String(o?.pad_size ?? o?.padSize ?? o?.pad_size_key ?? o?.addons?.padSize ?? o?.metadata?.padSize ?? '').trim();
-  const cadence = String(o?.pad_cadence ?? o?.padCadence ?? o?.pad_frequency ?? o?.addons?.padCadence ?? o?.metadata?.padCadence ?? '').trim();
-  return { enabled:true, size, cadence };
-};
-
-const padAddonLabel = (o) => {
-  const pad = getPadAddon(o);
-  if (!pad.enabled) return '';
+function servicesLabel(o){
+  const cansN = getCansCount(o);
+  const cadence = String(o?.service_frequency || o?.cadence || o?.frequency || '').trim();
   const parts = [];
-  if (pad.size) parts.push(pad.size);
-  if (pad.cadence) parts.push(pad.cadence);
-  return parts.length ? `Pad: ${parts.join(' • ')}` : 'Pad add-on';
-};
+  if (cansN > 0) parts.push(`${cansN} can${cansN===1?'':'s'}${cadence ? ` • ${cadence}` : ''}`);
+  const p = padLabel(o);
+  if (p) parts.push(p);
+  return parts.join(' | ');
+}
 
-// Simple ETA model (minutes): cans + optional pad wash.
-// Tune these anytime without touching the UI.
-const estimateStopMinutes = (o) => {
-  const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
-  const minsPerCan = 2.5; // ~2–3 mins per can
-  let mins = cansN * minsPerCan;
-
-  const pad = getPadAddon(o);
-  if (pad.enabled){
-    const size = String(pad.size || '').toLowerCase();
-    const sizeMins =
-      size.includes('large') ? 20 :
-      size.includes('med')   ? 15 :
-      size.includes('small') ? 10 : 15;
-    mins += sizeMins;
-  }
-
-  // Round to nearest 5 mins for operator friendliness
-  return Math.max(5, Math.round(mins / 5) * 5);
-};
-
+// ETA heuristic for operator sheets
+const PAD_MINUTES_BY_SIZE = { small: 10, medium: 15, large: 20 };
+function estimateStopMinutes(o){
+  const cansN = getCansCount(o);
+  const pad = getPadInfo(o);
+  const minsCans = cansN * 4; // keep your existing heuristic (EST_MINUTES_PER_CAN)
+  const minsPad = pad.enabled ? (PAD_MINUTES_BY_SIZE[String(pad.size||'').toLowerCase()] || 15) : 0;
+  const total = minsCans + minsPad;
+  return Math.max(0, Math.round(total));
+}
 const payoutToPercent = (v) => {
   const n = Number(v);
   if (!isFinite(n)) return 30;
@@ -1225,7 +1222,7 @@ function renderHomeOrdersInbox(){
     html.push(`<tr class="clickable" data-order-id="${escapeHtml(o.id)}">
       <td>
         <div class="title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
-        <div class="sub">${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))} • ${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${r.days===null?'—':escapeHtml(String(r.days)+'d old')}${padAddonLabel(o) ? ' • ' + escapeHtml(padAddonLabel(o)) : ''}</div>
+        <div class="sub">${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))} • ${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${r.days===null?'—':escapeHtml(String(r.days)+'d old')}</div>
       </td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(r.cad||o.cadence||'')}</td>
@@ -1428,7 +1425,7 @@ function renderSchedule(){
         <div>${escapeHtml(op.name || 'Unassigned')}</div>
         <div data-col="biz">
           <div class="title">${escapeHtml(ord.biz_name || ord.business_name || ord.contact_name || 'Order')}</div>
-          <div class="sub">${escapeHtml(String(ord.cadence||''))} • ${fmtMoney(ord.monthly_total || ord.due_today || 0)} • ${escapeHtml(stage)}${padAddonLabel(ord) ? ' • ' + escapeHtml(padAddonLabel(ord)) : ''}</div>
+          <div class="sub">${escapeHtml(String(ord.cadence||''))} • ${fmtMoney(ord.monthly_total || ord.due_today || 0)} • ${escapeHtml(stage)}</div>
         </div>
         <div data-col="addr" class="sub">${escapeHtml(ord.address || '')}</div>
         <div><span class="badge"><span class="dot"></span>${escapeHtml('due')}</span></div>
@@ -1592,7 +1589,7 @@ function renderDayAssignBoard(){
       const dep = isDeposit ? `<span class="badge amber"><span class="dot"></span>deposit</span>` : `<span class="badge"><span class="dot"></span>no</span>`;
 
       row.innerHTML = `
-        <div data-col="biz"><div class="title">${biz}</div><div class="sub">${fmtMoney(o.monthly_total || o.due_today || 0)}${padAddonLabel(o) ? ' • ' + escapeHtml(padAddonLabel(o)) : ''}</div></div>
+        <div data-col="biz"><div class="title">${biz}</div><div class="sub">${fmtMoney(o.monthly_total || o.due_today || 0)}</div></div>
         <div data-col="addr" class="sub">${addr}</div>
         <div>${cad}</div>
         <div>${dep}</div>
@@ -1757,20 +1754,20 @@ function printSchedulePDF(){
       <h1>${escapeHtml(title)}</h1>
       <p class="sub">Generated from ProCan dashboard</p>
       <table>
-        <thead><tr><th>Stop</th><th>Operator</th><th>Business</th><th>Address</th><th>Cans</th><th>Add-ons</th><th>Est. mins</th><th>Cadence</th></tr></thead>
+        <thead><tr><th>Stop</th><th>Operator</th><th>Business</th><th>Address</th><th>Services</th><th>Est. mins</th></tr></thead>
         <tbody>
           ${rows.map(a=>{
             const o = orderById.get(a.order_id) || {};
             const op = a.operator_id ? (opsById.get(a.operator_id) || {}) : {};
+            const svc = servicesLabel(o) || (String(o.cadence||'') || '');
+            const mins = estimateStopMinutes(o);
             return `<tr>
               <td>${escapeHtml(String(a.stop_order||''))}</td>
               <td>${escapeHtml(op.name||'Unassigned')}</td>
               <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
               <td class="muted">${escapeHtml(o.address||'')}</td>
-              <td>${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))}</td>
-              <td>${padAddonLabel(o) ? escapeHtml(padAddonLabel(o)) : '<span class="muted">—</span>'}</td>
-              <td>${escapeHtml(String(estimateStopMinutes(o)))}</td>
-              <td class="muted">${escapeHtml(String(o.cadence||''))}</td>
+              <td class="muted">${escapeHtml(svc)}</td>
+              <td class="muted">${escapeHtml(String(mins))}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -1806,7 +1803,7 @@ function renderOrders(){
     <th>Business</th>
     <th>Address</th>
     <th>Cadence</th>
-    <th>Cans</th>
+    <th>Services</th>
     <th>Preferred day</th>
     <th>Monthly</th>
     <th>Status</th>
@@ -1818,7 +1815,7 @@ function renderOrders(){
       <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(o.cadence||'')}</td>
-      <td>${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))}${padAddonLabel(o) ? `<div class="muted">${escapeHtml(padAddonLabel(o))}</div>` : ''}</td>
+      <td class="muted">${escapeHtml(servicesLabel(o) || String(getCansCount(o)))} </td>
       <td>${escapeHtml(o.preferred_service_day||'')}</td>
       <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
       <td>${escapeHtml(stageLabelForOrder(o))}</td>
@@ -2089,7 +2086,6 @@ async function renderMap(){
           <div><b>Preferred day:</b> ${escapeHtml(ord.preferred_service_day||'—')}</div>
           <div><b>Status:</b> ${escapeHtml(stage)}</div>
           <div><b>Monthly:</b> ${escapeHtml(fmtMoney(ord.monthly_total || ord.due_today || 0))}</div>
-          ${padAddonLabel(ord) ? `<div><b>Add-on:</b> ${escapeHtml(padAddonLabel(ord))}</div>` : ''}
           <div><b>Age:</b> ${days===null ? '—' : escapeHtml(days+'d')} <span style="opacity:.7">(${escapeHtml(bucket)})</span></div>
           <div><b>ZIP:</b> ${escapeHtml(zip||'—')}</div>
         </div>
@@ -2355,6 +2351,7 @@ function renderRouteDetails(){
         const focus = focusId && String(o.id) === String(focusId);
         const stop = idx + 1;
         const cadence = o.cadence || o.service_frequency || o.frequency || '';
+        const svc = servicesLabel(o);
         return `
           <div class="row ${focus?'highlight':''}" data-order-id="${escapeHtml(o.id)}">
             <div style="display:flex;justify-content:space-between;gap:12px;">
@@ -2362,7 +2359,7 @@ function renderRouteDetails(){
                 <div style="font-weight:700;">${escapeHtml(stop + '. ' + (o.business_name||o.biz_name||o.name||'Order'))}</div>
                 <div class="muted">${escapeHtml(o.address||o.location||'')}</div>
               </div>
-              <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(cadence)}${padAddonLabel(o) ? ' • ' + escapeHtml(padAddonLabel(o)) : ''}</div>
+              <div class="muted">${escapeHtml(svc || (String(getCansCount(o)) + ' can(s) • ' + cadence))}</div>
             </div>
           </div>
         `;
@@ -2582,13 +2579,15 @@ function renderActiveRunUI(){
       stopsList.innerHTML = orders.map((o, idx)=>{
         const name = o.business_name||o.biz_name||o.name||'Order';
         const addr = o.address||o.location||'';
+        const svc = servicesLabel(o);
+        const mins = estimateStopMinutes(o);
         return `
           <div class="row">
             <div class="stopMeta">
               <div>
                 <div style="font-weight:800;">${escapeHtml(String(idx+1) + '. ' + name)}</div>
                 <div class="muted">${escapeHtml(addr)}</div>
-                <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(String(o.cadence||o.service_frequency||''))}${padAddonLabel(o)?' • '+escapeHtml(padAddonLabel(o)):''} • Est. ${escapeHtml(String(estimateStopMinutes(o)))} min</div>
+                ${svc ? `<div class="muted">${escapeHtml(svc)} • Est. ${escapeHtml(String(mins))}m</div>` : ''}
               </div>
               <div class="stopMetaRight">
                 <span class="tag warn">Pending</span>
@@ -2610,6 +2609,8 @@ function renderActiveRunUI(){
     const o = orderMap.get(String(s.order_id)) || {};
     const name = o.business_name||o.biz_name||o.name||'Order';
     const addr = o.address||o.location||'';
+    const svc = servicesLabel(o);
+    const mins = estimateStopMinutes(o);
     const tag = s.completed ? '<span class="tag ok">Done</span>' : '<span class="tag warn">Open</span>';
     const dis = isCompleted ? 'disabled' : '';
     return `
@@ -2618,7 +2619,7 @@ function renderActiveRunUI(){
           <div>
             <div style="font-weight:800;">${escapeHtml(String((s.stop_order||0)+1) + '. ' + name)}</div>
             <div class="muted">${escapeHtml(addr)}</div>
-            <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(String(o.cadence||o.service_frequency||''))}${padAddonLabel(o)?' • '+escapeHtml(padAddonLabel(o)):''} • Est. ${escapeHtml(String(estimateStopMinutes(o)))} min</div>
+            ${svc ? `<div class="muted">${escapeHtml(svc)} • Est. ${escapeHtml(String(mins))}m</div>` : ''}
           </div>
           <div class="stopMetaRight">
             ${tag}
@@ -2811,7 +2812,7 @@ function renderRouteAddList(){
           <div style="font-weight:700;">${escapeHtml(name)}</div>
           <div class="muted">${escapeHtml(addr)}</div>
         </div>
-        <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(o.cadence||'')}${padAddonLabel(o) ? ' • ' + escapeHtml(padAddonLabel(o)) : ''}</div>
+        <div class="muted">${escapeHtml(String((parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10)||0)))} can(s) • ${escapeHtml(o.cadence||'')}</div>
       </label>
     `;
   }).join('');
@@ -2943,6 +2944,27 @@ async function openOrderInRoute(orderId){
 
 
 /* ========= Route printing / PDF ========= */
+
+// --- Operator payout + duration estimates (used in print Route PDF)
+// Early adopters promo pricing (monthly price per can)
+const PRICE_PER_CAN_MONTH = 23;
+// Operator revenue share
+const OPERATOR_SHARE = 0.30;
+// Time estimate heuristic (minutes per can). Tweak as needed.
+const EST_MINUTES_PER_CAN = 4;
+
+function money(n){
+  const x = Number(n) || 0;
+  return x.toLocaleString(undefined, { style:'currency', currency:'USD' });
+}
+
+function fmtDurationFromMinutes(min){
+  const m = Math.max(0, Math.round(Number(min) || 0));
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  if (!h) return `${mm}m`;
+  return `${h}h ${String(mm).padStart(2,'0')}m`;
+}
 
 // Attempt to pull lat/lng fields from an order (supports different column names)
 function getLatLng(order){
@@ -3077,15 +3099,100 @@ async function printRoutePDF(){
     return true; // biweekly service
   };
 
+  // Pad due logic (pads can be standalone OR an add-on)
+  const normPadFreq = (o) => {
+    const p = getPadInfo(o);
+    const c = String(p.cadence || '').toLowerCase();
+    if (c.includes('week') && !c.includes('bi')) return 'weekly';
+    if (c.includes('bi')) return 'biweekly';
+    if (c.includes('month')) return 'monthly';
+    return c || 'biweekly';
+  };
+
+  const isPadDueThisRun = (o) => {
+    const p = getPadInfo(o);
+    if (!p.enabled) return false;
+    const f = normPadFreq(o);
+    const routeCadence = String(r.cadence||'biweekly').toLowerCase();
+
+    // Monthly route: everything on the route is handled on that date.
+    if (routeCadence === 'monthly') return true;
+
+    // Biweekly route:
+    if (f === 'monthly') return (runIndex % 2) === 0;
+    // Weekly pads on a biweekly route: treat as due every run (you may later add a "mid-week" route).
+    if (f === 'weekly') return true;
+    return true; // biweekly
+  };
+
+  // Operator payout logic:
+  // - PRICE_PER_CAN_MONTH is the monthly price per can (early adopters: $23)
+  // - Operator earns OPERATOR_SHARE of revenue
+  // - Biweekly services occur ~2x/month => payout per service is half of monthly share
+  // - Monthly services pay the full monthly share, but only when due (every other biweekly run)
+  const payoutForStopThisRun = (o) => {
+    const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
+    if (!cansN) return 0;
+    if (!isDueThisRun(o)) return 0;
+
+    const routeCadence = String(r.cadence||'biweekly').toLowerCase();
+    const f = normFreq(o);
+
+    const monthlySharePerCan = PRICE_PER_CAN_MONTH * OPERATOR_SHARE;
+
+    // If the route itself only runs monthly, everything that appears is monthly service.
+    if (routeCadence === 'monthly'){
+      return cansN * monthlySharePerCan;
+    }
+
+    // Biweekly route:
+    if (f === 'monthly'){
+      return cansN * monthlySharePerCan;
+    }
+    // Biweekly service: 2 runs per month
+    return cansN * (monthlySharePerCan / 2);
+  };
+
+  // Totals for this run
+  const totals = ordered.reduce((acc, o)=>{
+    const cansN = getCansCount(o);
+    const dueCans = (cansN > 0) && isDueThisRun(o);
+    const duePad = isPadDueThisRun(o);
+    const dueAny = dueCans || duePad;
+
+    acc.stops += 1;
+    acc.cansAll += cansN;
+
+    if (dueAny){
+      acc.stopsDue += 1;
+      if (dueCans) acc.cansDue += cansN;
+      if (duePad) acc.padsDue += 1;
+      acc.payout += payoutForStopThisRun(o);
+      acc.estMinutes += ((dueCans ? (cansN * EST_MINUTES_PER_CAN) : 0) + (duePad ? (PAD_MINUTES_BY_SIZE[String(getPadInfo(o).size||'').toLowerCase()] || 15) : 0));
+    } else {
+      acc.stopsSkip += 1;
+      acc.cansSkip += cansN;
+    }
+    return acc;
+  }, { stops:0, stopsDue:0, stopsSkip:0, cansAll:0, cansDue:0, cansSkip:0, padsDue:0, payout:0, estMinutes:0 });
+
+  const estDuration = fmtDurationFromMinutes(totals.estMinutes);
+
   const stopsHtml = ordered.map((o, idx)=>{
     const stopNum = idx + 1;
     const name = escapeHtml(o.business_name||o.biz_name||o.name||'Stop');
     const addr = escapeHtml(o.address||o.location||'');
     const freq = normFreq(o);
-    const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
-    const due = isDueThisRun(o);
+    const cansN = getCansCount(o);
+    const dueCans = (cansN > 0) && isDueThisRun(o);
+    const duePad = isPadDueThisRun(o);
+    const due = dueCans || duePad;
+    const pay = payoutForStopThisRun(o);
     const badge = due ? '<span class="badge due">DUE</span>' : '<span class="badge skip">SKIP</span>';
     const hint = due ? '' : ' <span class="muted">(skip this run)</span>';
+
+    const padTxt = duePad ? (padLabel(o) || 'Pad: Yes') : '';
+    const mins = Math.round((dueCans ? cansN * EST_MINUTES_PER_CAN : 0) + (duePad ? (PAD_MINUTES_BY_SIZE[String(getPadInfo(o).size||'').toLowerCase()] || 15) : 0));
 
     return `
       <tr>
@@ -3095,9 +3202,10 @@ async function printRoutePDF(){
           <div class="sub">${addr}</div>
         </td>
         <td>${escapeHtml(String(cansN))}</td>
-        <td>${padAddonLabel(o) ? escapeHtml(padAddonLabel(o)) : '<span class="muted">—</span>'}</td>
-        <td>${escapeHtml(String(estimateStopMinutes(o)))}</td>
         <td>${escapeHtml(freq)}</td>
+        <td>${escapeHtml(padTxt)}</td>
+        <td>${escapeHtml(String(mins))}</td>
+        <td>${escapeHtml(money(pay))}</td>
         <td>${hint}</td>
       </tr>
     `;
@@ -3118,6 +3226,10 @@ async function printRoutePDF(){
         .meta{ color:#4b5563; margin-bottom:14px; }
         .dates{ margin:10px 0 16px; padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; }
         .dates b{ display:inline-block; min-width:140px; }
+        .summary{ margin:0 0 16px; padding:12px; border:1px solid #e5e7eb; border-radius:10px; background:#f9fafb; }
+        .summaryGrid{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; }
+        .k{ color:#6b7280; font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+        .v{ font-weight:800; margin-top:2px; }
         table{ width:100%; border-collapse:collapse; }
         th,td{ border-bottom:1px solid #e5e7eb; padding:10px 8px; vertical-align:top; }
         th{ text-align:left; font-size:12px; color:#6b7280; letter-spacing:.04em; text-transform:uppercase; }
@@ -3139,15 +3251,42 @@ async function printRoutePDF(){
         <div><b>Service Date:</b> ${escapeHtml(fmtDateLong(serviceDate))} (${escapeHtml(serviceISO)})</div>
         <div><b>Next Service Date:</b> ${escapeHtml(next2 ? fmtDateLong(next2) : '—')} ${nextISO ? '('+escapeHtml(nextISO)+')' : ''}</div>
       </div>
+
+      <div class="summary">
+        <div class="summaryGrid">
+          <div>
+            <div class="k">Due cans (this run)</div>
+            <div class="v">${escapeHtml(String(totals.cansDue))}</div>
+          </div>
+          <div>
+            <div class="k">Operator payout (est.)</div>
+            <div class="v">${escapeHtml(money(totals.payout))}</div>
+          </div>
+          <div>
+            <div class="k">Route time (est.)</div>
+            <div class="v">${escapeHtml(estDuration)}</div>
+            <div class="muted">Assumes ${EST_MINUTES_PER_CAN} min/can + pad wash minutes</div>
+          </div>
+          <div>
+            <div class="k">Stops due</div>
+            <div class="v">${escapeHtml(String(totals.stopsDue))}</div>
+          </div>
+          <div>
+            <div class="k">Stops skipped</div>
+            <div class="v">${escapeHtml(String(totals.stopsSkip))}</div>
+          </div>
+        </div>
+      </div>
       <table>
         <thead>
           <tr>
             <th>#</th>
             <th>Stop</th>
             <th>Cans</th>
+            <th>Service</th>
             <th>Add-ons</th>
             <th>Est. mins</th>
-            <th>Service</th>
+            <th>Payout</th>
             <th>Notes</th>
           </tr>
         </thead>
