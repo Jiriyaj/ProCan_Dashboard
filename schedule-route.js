@@ -24,15 +24,25 @@ function json(res, status, obj){
 }
 
 function isAllowedOrigin(req){
-  const origin = String(req.headers.origin || '').trim();
   const reqHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').trim();
-  if (!origin || !reqHost) return false;
-  try{
-    const originHost = new URL(origin).host;
-    return originHost === reqHost;
-  }catch(e){
-    return false;
+  if (!reqHost) return false;
+
+  const candidates = [
+    String(req.headers.origin || '').trim(),
+    String(req.headers.referer || '').trim(),
+    String(req.headers.referrer || '').trim()
+  ].filter(Boolean);
+
+  // Same-origin browser requests on Vercel can be inconsistent across
+  // production domains, preview domains, and rewrites. Accept the request
+  // when any browser-supplied URL resolves to this exact host.
+  for (const value of candidates){
+    try{
+      if (new URL(value).host === reqHost) return true;
+    }catch(e){}
   }
+
+  return false;
 }
 
 function setCors(req, res){
