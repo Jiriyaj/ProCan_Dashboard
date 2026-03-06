@@ -24,35 +24,15 @@ function json(res, status, obj){
 }
 
 function isAllowedOrigin(req){
-  const reqHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').trim();
-  if (!reqHost) return true;
-
-  const candidates = [
-    String(req.headers.origin || '').trim(),
-    String(req.headers.referer || '').trim(),
-    String(req.headers.referrer || '').trim()
-  ].filter(Boolean);
-
-  // Same-origin fetches may omit Origin entirely on some browsers / Vercel paths.
-  // When no browser origin headers are present, allow the request.
-  if (!candidates.length) return true;
-
-  for (const value of candidates){
-    try{
-      if (new URL(value).host === reqHost) return true;
-    }catch(e){}
-  }
-
-  return false;
+  return true;
 }
 
 function setCors(req, res){
   const origin = String(req.headers.origin || '').trim();
-  const allowOrigin = origin && isAllowedOrigin(req) ? origin : '*';
-  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
+  res.setHeader('Access-Control-Allow-Origin', origin || '*');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
