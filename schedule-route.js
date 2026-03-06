@@ -25,7 +25,7 @@ function json(res, status, obj){
 
 function isAllowedOrigin(req){
   const reqHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').trim();
-  if (!reqHost) return false;
+  if (!reqHost) return true;
 
   const candidates = [
     String(req.headers.origin || '').trim(),
@@ -33,9 +33,10 @@ function isAllowedOrigin(req){
     String(req.headers.referrer || '').trim()
   ].filter(Boolean);
 
-  // Same-origin browser requests on Vercel can be inconsistent across
-  // production domains, preview domains, and rewrites. Accept the request
-  // when any browser-supplied URL resolves to this exact host.
+  // Same-origin fetches may omit Origin entirely on some browsers / Vercel paths.
+  // When no browser origin headers are present, allow the request.
+  if (!candidates.length) return true;
+
   for (const value of candidates){
     try{
       if (new URL(value).host === reqHost) return true;
@@ -47,7 +48,7 @@ function isAllowedOrigin(req){
 
 function setCors(req, res){
   const origin = String(req.headers.origin || '').trim();
-  const allowOrigin = isAllowedOrigin(req) ? origin : 'null';
+  const allowOrigin = origin && isAllowedOrigin(req) ? origin : '*';
   res.setHeader('Access-Control-Allow-Origin', allowOrigin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
@@ -90,6 +91,7 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
 try{
     if (req.method !== 'POST') return json(res, 405, { error:'Method Not Allowed' });
+    // Allow same-origin dashboard requests even when Origin/Referer are omitted by the browser or Vercel.
     if (!isAllowedOrigin(req)) return json(res, 401, { error:'Unauthorized origin' });
 
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
