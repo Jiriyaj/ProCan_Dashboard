@@ -3360,15 +3360,17 @@ async function scheduleRouteStart(){
   renderRoutes();
   renderRouteDetails();
 
-  // Optional: call backend (same-origin /api) to sync Stripe subscription trial_end + apply deposit credit.
+  // Optional: sync Stripe billing through the intake/backend API.
   const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
+  const apiBase = (localStorage.getItem('PROCAN_API_BASE') || '').trim().replace(/\/$/, '');
+  const syncUrl = apiBase ? `${apiBase}/api/schedule-route` : '/api/schedule-route';
   if (!token){
     toast('Route scheduled. Set PROCAN_ROUTE_TOKEN to sync billing.', 'ok');
     return;
   }
 
   try{
-    const resp = await fetch('/api/schedule-route', {
+    const resp = await fetch(syncUrl, {
       method:'POST',
       headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
       body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
@@ -3378,7 +3380,14 @@ async function scheduleRouteStart(){
       toast('Billing sync failed: ' + (data.error || resp.status), 'warn');
       return;
     }
-    toast('Route scheduled + billing synced', 'ok');
+    const subCount = Number(data.updated_subscriptions || 0);
+    if (subCount > 0){
+      toast(`Route scheduled + billing synced (${subCount} subs)`, 'ok');
+    } else if (Array.isArray(data.errors) && data.errors.length){
+      toast('Route scheduled, but billing sync had errors', 'warn');
+    } else {
+      toast('Route scheduled. No Stripe subscriptions found to update.', 'ok');
+    }
   }catch(err){
     toast('Billing sync failed to fetch', 'warn');
   }
