@@ -187,7 +187,7 @@ function computeNextServiceDates(route){
   const next2 = (cadence==='monthly') ? addMonths(next,1) : addDays(next,14);
   return { next, next2 };
 }
-const PROCAN_API_BASE = (window.PROCAN_API_BASE || localStorage.getItem('PROCAN_API_BASE') || '').trim();
+const PROCAN_API_BASE = '';
 
 
 
@@ -1870,27 +1870,19 @@ async function cancelOrder(orderId){
 
   if (!confirm(`Cancel this order (${mode.replace('_',' ')})? Deposit is forfeited if cancelled before route begins.`)) return;
 
-  // Cancel Stripe subscription via same-origin /api (secured by PROCAN_ROUTE_TOKEN).
-  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
-  if (token){
-    try{
-      const resp = await fetch('/api/order-cancel', {
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'Authorization':'Bearer ' + token
-        },
-        body: JSON.stringify({ order_id: o.id, mode })
-      });
-      const data = await resp.json().catch(()=> ({}));
-      if (!resp.ok){
-        toast('Stripe cancel failed: ' + (data.error || resp.status), 'warn');
-      }
-    }catch(e){
-      toast('Stripe cancel failed to fetch', 'warn');
+  // Cancel Stripe subscription via same-origin /api.
+  try{
+    const resp = await fetch('/api/order-cancel', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ order_id: o.id, mode })
+    });
+    const data = await resp.json().catch(()=> ({}));
+    if (!resp.ok){
+      toast('Stripe cancel failed: ' + (data.error || resp.status), 'warn');
     }
-  } else {
-    toast('Cancelled locally (no PROCAN_ROUTE_TOKEN set to cancel Stripe).', 'warn');
+  }catch(e){
+    toast('Stripe cancel failed to fetch', 'warn');
   }
 
   // Update Supabase order status
@@ -3360,19 +3352,11 @@ async function scheduleRouteStart(){
   renderRoutes();
   renderRouteDetails();
 
-  // Optional: sync Stripe billing through the intake/backend API.
-  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
-  const apiBase = (localStorage.getItem('PROCAN_API_BASE') || '').trim().replace(/\/$/, '');
-  const syncUrl = apiBase ? `${apiBase}/api/schedule-route` : '/api/schedule-route';
-  if (!token){
-    toast('Route scheduled. Set PROCAN_ROUTE_TOKEN to sync billing.', 'ok');
-    return;
-  }
-
+  // Sync Stripe billing through same-origin dashboard API.
   try{
-    const resp = await fetch(syncUrl, {
+    const resp = await fetch('/api/schedule-route', {
       method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
+      headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
     });
     const data = await resp.json().catch(()=> ({}));

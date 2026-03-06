@@ -17,20 +17,26 @@ function json(res, status, obj){
   res.end(JSON.stringify(obj));
 }
 
-function setCors(req, res){
-  const origin = req.headers.origin || '';
-  const allowList = (process.env.CORS_ALLOW_ORIGINS || '').split(',').map(v=>v.trim()).filter(Boolean);
-    const allowOrigin = allowList.length ? (allowList.includes(origin) ? origin : '*') : '*'; // always respond for browser CORS
-  res.setHeader('Access-Control-Allow-Origin', allowOrigin);  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.setHeader('Access-Control-Max-Age', '86400');
+function isAllowedOrigin(req){
+  const origin = String(req.headers.origin || '').trim();
+  const reqHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').trim();
+  if (!origin || !reqHost) return false;
+  try{
+    const originHost = new URL(origin).host;
+    return originHost === reqHost;
+  }catch(e){
+    return false;
+  }
 }
 
-function requireAuth(req){
-  const h = req.headers.authorization || req.headers.Authorization || '';
-  const token = String(h).startsWith('Bearer ') ? String(h).slice(7).trim() : '';
-  return token && process.env.ROUTE_SCHEDULER_TOKEN && token === process.env.ROUTE_SCHEDULER_TOKEN;
+function setCors(req, res){
+  const origin = String(req.headers.origin || '').trim();
+  const allowOrigin = isAllowedOrigin(req) ? origin : 'null';
+  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '86400');
 }
 
 async function sbFetch(path, method, body){
@@ -58,7 +64,7 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
 try{
     if (req.method !== 'POST') return json(res, 405, { error:'Method Not Allowed' });
-    if (!requireAuth(req)) return json(res, 401, { error:'Unauthorized' });
+    if (!isAllowedOrigin(req)) return json(res, 401, { error:'Unauthorized origin' });
 
     const body = req.body || {};
     const orderId = String(body.order_id || '').trim();
