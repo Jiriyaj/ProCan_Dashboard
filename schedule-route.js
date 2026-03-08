@@ -34,7 +34,9 @@ function setCors(req, res){
 }
 
 function requireAuth(req){
-  return true;
+  const h = req.headers.authorization || req.headers.Authorization || '';
+  const token = String(h).startsWith('Bearer ') ? String(h).slice(7).trim() : '';
+  return token && process.env.ROUTE_SCHEDULER_TOKEN && token === process.env.ROUTE_SCHEDULER_TOKEN;
 }
 
 function parseDateToChargeTimestamp(serviceStartDateISO){
@@ -72,7 +74,6 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
 try{
     if (req.method !== 'POST') return json(res, 405, { error:'Method Not Allowed' });
-    // Same-origin dashboard call; no browser token required.
     if (!requireAuth(req)) return json(res, 401, { error:'Unauthorized' });
 
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
