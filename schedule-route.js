@@ -33,7 +33,7 @@ function setCors(req, res){
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-const BUILD_VERSION = 'schedule-debug-20260307-2328';
+const BUILD_VERSION = 'schedule-livefix-20260308-0001';
 
 function requireAuth(req){
   return true;

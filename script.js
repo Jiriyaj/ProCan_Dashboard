@@ -1,4 +1,4 @@
-console.log('ProCan dashboard build: schedule-debug-20260307-2328');
+console.log('ProCan dashboard build: schedule-livefix-20260308-0001');
 
 async function probeSchema(){
   // Detect if routes table + orders.route_id exist. Safe: if not, we just disable route-first UI.
