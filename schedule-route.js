@@ -33,6 +33,8 @@ function setCors(req, res){
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
+const BUILD_VERSION = 'schedule-debug-20260307-2328';
+
 function requireAuth(req){
   return true;
 }
@@ -71,7 +73,7 @@ module.exports = async (req, res) => {
   setCors(req, res);
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
 try{
-    if (req.method !== 'POST') return json(res, 405, { error:'Method Not Allowed' });
+    if (req.method !== 'POST') return json(res, 405, { error:'Method Not Allowed', build: BUILD_VERSION });
     if (!requireAuth(req)) return json(res, 401, { error:'Unauthorized' });
 
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -125,6 +127,7 @@ try{
 
     return json(res, 200, {
       ok:true,
+      build: BUILD_VERSION,
       route_id: routeId,
       service_start_date: serviceStartDate,
       cadence,
