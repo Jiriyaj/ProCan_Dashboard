@@ -33,9 +33,10 @@ function setCors(req, res){
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-const BUILD_VERSION = 'schedule-repofix-20260308-0015';
+const BUILD_VERSION = 'schedule-final-20260308-0035';
 
 function requireAuth(req){
+  // Same-origin dashboard operation; no browser token required.
   return true;
 }
 

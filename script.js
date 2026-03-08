@@ -1,3 +1,4 @@
+console.log('ProCan dashboard build: schedule-final-20260308-0035');
 
 console.log('ProCan dashboard build: schedule-repofix-20260308-0015');
 console.log('ProCan dashboard build: schedule-livefix-20260308-0001');
