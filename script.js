@@ -3364,17 +3364,12 @@ async function scheduleRouteStart(){
   renderRoutes();
   renderRouteDetails();
 
-  // Optional: call backend (same-origin /api) to sync Stripe subscription trial_end + apply deposit credit.
-  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
-  if (!token){
-    toast('Route scheduled. Set PROCAN_ROUTE_TOKEN to sync billing.', 'ok');
-    return;
-  }
-
+  // Sync billing by calling the intake/POS backend directly.
+  // This keeps Stripe secret handling server-side and avoids browser localStorage tokens.
   try{
-    const resp = await fetch('/api/schedule-route', {
+    const resp = await fetch('https://procan-intake-git-main-jiriyas-projects.vercel.app/api/schedule-route', {
       method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
+      headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
     });
     const data = await resp.json().catch(()=> ({}));
@@ -3382,8 +3377,19 @@ async function scheduleRouteStart(){
       toast('Billing sync failed: ' + (data.error || resp.status), 'warn');
       return;
     }
-    toast('Route scheduled + billing synced', 'ok');
+    const updated = Number(data.updated_subscriptions || 0);
+    const errs = Array.isArray(data.errors) ? data.errors : [];
+    if (updated > 0){
+      toast(`Route scheduled + billing synced (${updated} sub${updated===1?'':'s'})`, 'ok');
+    } else if (errs.length){
+      toast('Route saved, but Stripe update failed for ' + errs.length + ' order(s).', 'warn');
+      console.warn('schedule-route errors', errs);
+    } else {
+      toast('Route saved, but no Stripe subscriptions were updated.', 'warn');
+      console.warn('schedule-route response', data);
+    }
   }catch(err){
+    console.error('scheduleRouteStart fetch failed', err);
     toast('Billing sync failed to fetch', 'warn');
   }
 }
