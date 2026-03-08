@@ -3364,10 +3364,9 @@ async function scheduleRouteStart(){
   renderRoutes();
   renderRouteDetails();
 
-  // Sync billing by calling the intake/POS backend directly.
-  // This keeps Stripe secret handling server-side and avoids browser localStorage tokens.
+  // Sync billing through the dashboard's own API route (same-origin, no browser token, no CORS).
   try{
-    const resp = await fetch('https://procan-intake-git-main-jiriyas-projects.vercel.app/api/schedule-route', {
+    const resp = await fetch('/api/schedule-route', {
       method:'POST',
       headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
