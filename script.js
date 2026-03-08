@@ -1,3 +1,5 @@
+
+console.log('ProCan dashboard build: schedule-repofix-20260308-0015');
 console.log('ProCan dashboard build: schedule-livefix-20260308-0001');
 
 async function probeSchema(){
