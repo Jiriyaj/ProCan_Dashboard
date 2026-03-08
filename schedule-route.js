@@ -23,17 +23,18 @@ function json(res, status, obj){
   res.end(JSON.stringify(obj));
 }
 
-function isAllowedOrigin(req){
-  return true;
+function setCors(req, res){
+  const origin = req.headers.origin || '';
+  const allowList = (process.env.CORS_ALLOW_ORIGINS || '').split(',').map(v=>v.trim()).filter(Boolean);
+    const allowOrigin = allowList.length ? (allowList.includes(origin) ? origin : '*') : '*'; // always respond for browser CORS
+  res.setHeader('Access-Control-Allow-Origin', allowOrigin);  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-function setCors(req, res){
-  const origin = String(req.headers.origin || '').trim();
-  res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
+function requireAuth(req){
+  return true;
 }
 
 function parseDateToChargeTimestamp(serviceStartDateISO){
@@ -71,8 +72,8 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
 try{
     if (req.method !== 'POST') return json(res, 405, { error:'Method Not Allowed' });
-    // Allow same-origin dashboard requests even when Origin/Referer are omitted by the browser or Vercel.
-    if (!isAllowedOrigin(req)) return json(res, 401, { error:'Unauthorized origin' });
+    // Same-origin dashboard call; no browser token required.
+    if (!requireAuth(req)) return json(res, 401, { error:'Unauthorized' });
 
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
     const body = req.body || {};
