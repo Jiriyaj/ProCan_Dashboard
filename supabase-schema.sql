@@ -210,6 +210,17 @@ END $$;
 
 
 
+
+
+-- Intake pricing snapshot fields (lets the dashboard monitor discounts and calculate operator payouts accurately)
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS discount_code text,
+  ADD COLUMN IF NOT EXISTS discount_total numeric(10,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS base_monthly_total numeric(10,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS trash_price_per_can_month numeric(10,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS trash_monthly_total numeric(10,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS pad_monthly_total numeric(10,2) DEFAULT 0;
+
 -- 7) PAYMENT TRACKING: dashboard-side receivables visibility
 ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS payment_status text,

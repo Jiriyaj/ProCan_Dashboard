@@ -98,8 +98,48 @@ function moneyNum(v){
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
+function orderDiscountAmount(o){
+  const explicit = moneyNum(o?.discount_total ?? o?.monthly_discount_total ?? o?.discount_amount);
+  if (explicit > 0) return Math.max(0, explicit);
+  const base = moneyNum(o?.base_monthly_total ?? o?.monthly_subtotal ?? o?.monthly_base_amount);
+  const net = moneyNum(o?.monthly_total ?? o?.due_today ?? o?.amount_due);
+  if (base > 0 && base >= net) return Math.max(0, +(base - net).toFixed(2));
+  return 0;
+}
 function orderContractAmount(o){
   return Math.max(0, moneyNum(o?.monthly_total ?? o?.due_today ?? o?.amount_due ?? 0));
+}
+function orderBaseAmount(o){
+  const explicit = moneyNum(o?.base_monthly_total ?? o?.monthly_subtotal ?? o?.monthly_base_amount);
+  if (explicit > 0) return explicit;
+  return +(orderContractAmount(o) + orderDiscountAmount(o)).toFixed(2);
+}
+function orderTrashMonthlyAmount(o){
+  const explicit = moneyNum(o?.trash_monthly_total);
+  if (explicit > 0) return explicit;
+  const cansN = getCansCount(o);
+  const pricePerCan = moneyNum(o?.trash_price_per_can_month ?? o?.price_per_can_month);
+  if (cansN > 0 && pricePerCan > 0) return +(cansN * pricePerCan).toFixed(2);
+  const total = orderContractAmount(o);
+  const pad = orderPadMonthlyAmount(o);
+  if (cansN > 0 && total > 0 && pad >= 0 && total >= pad) return +(Math.max(0, total - pad)).toFixed(2);
+  return 0;
+}
+function orderPadMonthlyAmount(o){
+  const explicit = moneyNum(o?.pad_monthly_total ?? o?.pad_monthly_value);
+  if (explicit > 0) return explicit;
+  return getPadInfo(o).enabled ? 0 : 0;
+}
+function orderPriceSnapshotLabel(o){
+  const bits = [];
+  const base = orderBaseAmount(o);
+  const net = orderContractAmount(o);
+  const disc = orderDiscountAmount(o);
+  if (base > 0) bits.push(`Base ${fmtMoney(base)}`);
+  if (disc > 0) bits.push(`Discount ${fmtMoney(disc)}`);
+  if (o?.discount_code) bits.push(`Code ${String(o.discount_code)}`);
+  if (net > 0) bits.push(`Net ${fmtMoney(net)}`);
+  return bits.join(' • ');
 }
 function orderAmountPaid(o){
   return Math.max(0, moneyNum(o?.amount_paid ?? 0));
@@ -2079,7 +2119,10 @@ function renderOrderInspector(orderId){
       </div>
       <div class="card inner">
         <div class="card-title-sm">Billing</div>
-        <div class="kv"><span>Monthly</span><b>${escapeHtml(fmtMoney(total))}</b></div>
+        <div class="kv"><span>Base monthly</span><b>${escapeHtml(fmtMoney(orderBaseAmount(order)))}</b></div>
+        <div class="kv"><span>Discount</span><b>${escapeHtml(fmtMoney(orderDiscountAmount(order)))}</b></div>
+        <div class="kv"><span>Net monthly</span><b>${escapeHtml(fmtMoney(total))}</b></div>
+        <div class="kv"><span>Discount code</span><b>${escapeHtml(String(order.discount_code || '—'))}</b></div>
         <div class="kv"><span>Paid</span><b>${escapeHtml(fmtMoney(paid))}</b></div>
         <div class="kv"><span>Open balance</span><b>${escapeHtml(fmtMoney(bal))}</b></div>
         <div class="kv"><span>Due date</span><b>${escapeHtml(String(order.payment_due_date || '').slice(0,10) || '—')}</b></div>
@@ -2211,6 +2254,7 @@ function renderOrders(){
       <td>
         <div>${escapeHtml(fmtMoney(bal))}</div>
         <div class="sub">of ${escapeHtml(fmtMoney(total))}</div>
+        <div class="sub">${escapeHtml(orderPriceSnapshotLabel(o) || '—')}</div>
       </td>
       <td>
         <div class="actions order-actions">
@@ -3354,9 +3398,10 @@ async function openOrderInRoute(orderId){
 /* ========= Route printing / PDF ========= */
 
 // --- Operator payout + duration estimates (used in print Route PDF)
-// Early adopters promo pricing (monthly price per can)
+// Fallbacks are only used when the intake/order record does not yet provide pricing snapshots.
 const PRICE_PER_CAN_MONTH = 23;
-// Operator revenue share
+const DEFAULT_PAD_MONTHLY_BY_SIZE = { small:75, medium:125, large:200 };
+// Operator revenue share fallback
 const OPERATOR_SHARE = 0.30;
 // Time estimate heuristic (minutes per can). Tweak as needed.
 const EST_MINUTES_PER_CAN = 4;
@@ -3534,31 +3579,61 @@ async function printRoutePDF(){
   };
 
   // Operator payout logic:
-  // - PRICE_PER_CAN_MONTH is the monthly price per can (early adopters: $23)
-  // - Operator earns OPERATOR_SHARE of revenue
-  // - Biweekly services occur ~2x/month => payout per service is half of monthly share
-  // - Monthly services pay the full monthly share, but only when due (every other biweekly run)
+  // Prefer pricing captured from intake/order metadata. If a pricing snapshot does not exist yet,
+  // fall back to the original early-adopter assumptions so older orders still print.
+  const routeOperator = r?.operator_id ? ((state.operators||[]).find(op => String(op.id) === String(r.operator_id)) || null) : null;
+  const operatorShare = ((routeOperator ? payoutToPercent(routeOperator.payout_rate) : (OPERATOR_SHARE * 100)) || 30) / 100;
+
+  const monthlyTrashRevenue = (o) => {
+    const explicit = moneyNum(o?.trash_monthly_total);
+    if (explicit > 0) return explicit;
+    const cansN = getCansCount(o);
+    const pricePerCan = moneyNum(o?.trash_price_per_can_month ?? o?.price_per_can_month);
+    if (cansN > 0 && pricePerCan > 0) return +(cansN * pricePerCan).toFixed(2);
+    if (cansN > 0) return +(cansN * PRICE_PER_CAN_MONTH).toFixed(2);
+    return 0;
+  };
+
+  const monthlyPadRevenue = (o) => {
+    const explicit = moneyNum(o?.pad_monthly_total ?? o?.pad_monthly_value);
+    if (explicit > 0) return explicit;
+    const p = getPadInfo(o);
+    if (!p.enabled) return 0;
+    const key = String(p.size || '').toLowerCase();
+    return moneyNum(DEFAULT_PAD_MONTHLY_BY_SIZE[key] || 0);
+  };
+
+  const applyDiscountShare = (amount, o, componentMonthly) => {
+    const netMonthly = orderContractAmount(o);
+    const discountMonthly = orderDiscountAmount(o);
+    const baseMonthly = orderBaseAmount(o);
+    if (amount <= 0) return 0;
+    if (discountMonthly <= 0 || baseMonthly <= 0 || componentMonthly <= 0) return amount;
+    const proratedDiscount = discountMonthly * (componentMonthly / baseMonthly);
+    return Math.max(0, +(amount - proratedDiscount).toFixed(2));
+  };
+
   const payoutForStopThisRun = (o) => {
-    const cansN = (parseInt(String(o.cans ?? o.can_count ?? o.qty ?? ''),10) || 0);
-    if (!cansN) return 0;
-    if (!isDueThisRun(o)) return 0;
+    const trashMonthly = monthlyTrashRevenue(o);
+    const padMonthly = monthlyPadRevenue(o);
+    const trashDue = trashMonthly > 0 && isDueThisRun(o);
+    const padDue = padMonthly > 0 && isPadDueThisRun(o);
+    if (!trashDue && !padDue) return 0;
 
     const routeCadence = String(r.cadence||'biweekly').toLowerCase();
-    const f = normFreq(o);
+    const serviceCadence = normFreq(o);
+    const padCadence = normPadFreq(o);
 
-    const monthlySharePerCan = PRICE_PER_CAN_MONTH * OPERATOR_SHARE;
-
-    // If the route itself only runs monthly, everything that appears is monthly service.
-    if (routeCadence === 'monthly'){
-      return cansN * monthlySharePerCan;
+    let dueRevenue = 0;
+    if (trashDue){
+      const trashPerRun = (routeCadence === 'monthly' || serviceCadence === 'monthly') ? trashMonthly : (trashMonthly / 2);
+      dueRevenue += applyDiscountShare(trashPerRun, o, trashMonthly);
     }
-
-    // Biweekly route:
-    if (f === 'monthly'){
-      return cansN * monthlySharePerCan;
+    if (padDue){
+      const padPerRun = (routeCadence === 'monthly' || padCadence === 'monthly') ? padMonthly : (padCadence === 'weekly' ? (padMonthly / 4) * 2 : (padMonthly / 2));
+      dueRevenue += applyDiscountShare(padPerRun, o, padMonthly);
     }
-    // Biweekly service: 2 runs per month
-    return cansN * (monthlySharePerCan / 2);
+    return +(dueRevenue * operatorShare).toFixed(2);
   };
 
   // Totals for this run
