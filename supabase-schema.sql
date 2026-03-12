@@ -221,3 +221,24 @@ ALTER TABLE public.orders
 
 CREATE INDEX IF NOT EXISTS idx_orders_payment_status ON public.orders(payment_status);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_due_date ON public.orders(payment_due_date);
+
+
+-- 8) STRIPE WEBHOOK SYNC: keep orders live with Stripe events
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS stripe_current_period_end timestamptz,
+  ADD COLUMN IF NOT EXISTS stripe_cancel_at timestamptz,
+  ADD COLUMN IF NOT EXISTS stripe_cancel_at_period_end boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS last_stripe_event_id text,
+  ADD COLUMN IF NOT EXISTS last_stripe_event_type text,
+  ADD COLUMN IF NOT EXISTS last_stripe_event_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS public.stripe_webhook_events (
+  event_id text PRIMARY KEY,
+  event_type text,
+  livemode boolean DEFAULT false,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  payload jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_stripe_webhook_events_received_at
+  ON public.stripe_webhook_events(received_at DESC);
