@@ -205,3 +205,16 @@ BEGIN
   END IF;
 END $$;
 
+
+
+-- 7) PAYMENT TRACKING: dashboard-side receivables visibility
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS payment_status text,
+  ADD COLUMN IF NOT EXISTS payment_due_date date,
+  ADD COLUMN IF NOT EXISTS payment_paid_date date,
+  ADD COLUMN IF NOT EXISTS amount_paid numeric(10,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS payment_notes text,
+  ADD COLUMN IF NOT EXISTS last_invoice_sent_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS idx_orders_payment_status ON public.orders(payment_status);
+CREATE INDEX IF NOT EXISTS idx_orders_payment_due_date ON public.orders(payment_due_date);

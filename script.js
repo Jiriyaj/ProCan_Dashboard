@@ -90,6 +90,92 @@ function servicesLabel(o){
   return parts.join(' | ');
 }
 
+function moneyNum(v){
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function orderContractAmount(o){
+  return Math.max(0, moneyNum(o?.monthly_total ?? o?.due_today ?? o?.amount_due ?? 0));
+}
+function orderAmountPaid(o){
+  return Math.max(0, moneyNum(o?.amount_paid ?? 0));
+}
+function orderBalanceDue(o){
+  return Math.max(0, +(orderContractAmount(o) - orderAmountPaid(o)).toFixed(2));
+}
+function normalizedPaymentStatus(o){
+  const raw = String(o?.payment_status || '').trim().toLowerCase();
+  if (raw) return raw;
+  const bal = orderBalanceDue(o);
+  if (bal <= 0.009 && orderContractAmount(o) > 0) return 'paid';
+  if (orderAmountPaid(o) > 0) return 'partial';
+  if (String(stageLabelForOrder(o)).toLowerCase() === 'needs deposit') return 'needs_invoice';
+  return 'unpaid';
+}
+function isPaymentOverdue(o){
+  const due = String(o?.payment_due_date || '').slice(0,10);
+  if (!due) return false;
+  if (normalizedPaymentStatus(o) === 'paid') return false;
+  return due < toISODate(new Date());
+}
+function paymentDisplayLabel(o){
+  if (isPaymentOverdue(o)) return 'overdue';
+  const st = normalizedPaymentStatus(o);
+  if (st === 'needs_invoice') return 'needs invoice';
+  return st.replace(/_/g, ' ');
+}
+function paymentBadgeHtml(o){
+  const label = paymentDisplayLabel(o);
+  let cls = '';
+  if (label === 'paid') cls = 'ok';
+  else if (label === 'overdue') cls = 'warn';
+  else if (label === 'partial') cls = 'blue';
+  else cls = 'brand';
+  return `<span class="badge ${cls}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+}
+function orderPaymentFilterMatch(o, filter){
+  if (filter === 'all') return true;
+  if (filter === 'overdue') return isPaymentOverdue(o);
+  if (filter === 'paid') return normalizedPaymentStatus(o) === 'paid';
+  if (filter === 'needs_invoice') return normalizedPaymentStatus(o) === 'needs_invoice';
+  if (filter === 'open_balance') return orderBalanceDue(o) > 0.009 && !isPaymentOverdue(o) && normalizedPaymentStatus(o) !== 'needs_invoice';
+  return true;
+}
+function renderOrderPaymentSummary(rows){
+  const wrap = $('orderPaymentsSummary');
+  if (!wrap) return;
+  if (state.supportsPaymentTracking === false){
+    wrap.innerHTML = `
+      <div class="card kpi">
+        <div class="kpi-label">Payment tracking</div>
+        <div class="kpi-value">Off</div>
+        <div class="kpi-sub">Run the latest schema patch to add payment columns</div>
+      </div>`;
+    return;
+  }
+  const open = rows.reduce((s,o)=>s + orderBalanceDue(o), 0);
+  const overdue = rows.filter(isPaymentOverdue);
+  const overdueAmt = overdue.reduce((s,o)=>s + orderBalanceDue(o), 0);
+  const paid = rows.filter(o => normalizedPaymentStatus(o) === 'paid');
+  const partial = rows.filter(o => normalizedPaymentStatus(o) === 'partial');
+  wrap.innerHTML = `
+    <div class="card kpi">
+      <div class="kpi-label">Open balance</div>
+      <div class="kpi-value">${escapeHtml(fmtMoney(open))}</div>
+      <div class="kpi-sub">Across ${rows.length} visible order${rows.length===1?'':'s'}</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Overdue</div>
+      <div class="kpi-value">${escapeHtml(fmtMoney(overdueAmt))}</div>
+      <div class="kpi-sub">${overdue.length} overdue account${overdue.length===1?'':'s'}</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Collected</div>
+      <div class="kpi-value">${paid.length}</div>
+      <div class="kpi-sub">Paid in full • ${partial.length} partial</div>
+    </div>`;
+}
+
 // ETA heuristic for operator sheets
 const PAD_MINUTES_BY_SIZE = { small: 10, medium: 15, large: 20 };
 function estimateStopMinutes(o){
@@ -548,6 +634,7 @@ const state = {
   operators: [],
   orders: [],
   supportsRouteOperatorId: true,
+  supportsPaymentTracking: true,
   assignments: [],
   payoutMode: "percent", // "percent" (30) or "fraction" (0.30)
   map: null,
@@ -671,6 +758,7 @@ function wireUI(){
   on('mapCadence', 'change', () => renderMap());
   on('mapStatus', 'change', () => renderMap());
   on('ordersStatus', 'change', () => renderOrders());
+  on('ordersPaymentFilter', 'change', () => renderOrders());
   on('ordersShowArchived', 'change', () => renderOrders());
   on('ordersSearch', 'input', () => renderOrders());
   on('homeCadence', 'change', () => renderHome());
@@ -799,6 +887,9 @@ async function refreshAll(showBannerOnErrors){
   // Detect whether orders table supports route_operator_id (some DBs may not have this column yet)
   try {
     state.supportsRouteOperatorId = (state.orders.length > 0) ? Object.prototype.hasOwnProperty.call(state.orders[0], 'route_operator_id') : state.supportsRouteOperatorId;
+    state.supportsPaymentTracking = (state.orders.length > 0)
+      ? ['payment_status','payment_due_date','amount_paid','payment_paid_date'].every(k => Object.prototype.hasOwnProperty.call(state.orders[0], k))
+      : state.supportsPaymentTracking;
   } catch(e) {}
   state.assignments = asnRes.data || [];
 
@@ -1787,22 +1878,66 @@ function printSchedulePDF(){
 
 
 /* ========= Orders ========= */
+async function saveOrderPayment(orderId, patch){
+  if (state.supportsPaymentTracking === false){
+    toast('Run the latest Supabase schema patch to enable payment tracking', 'warn');
+    return false;
+  }
+  const clean = { ...patch };
+  if ('payment_status' in clean) clean.payment_status = clean.payment_status ? String(clean.payment_status) : null;
+  if ('payment_due_date' in clean) clean.payment_due_date = clean.payment_due_date ? String(clean.payment_due_date) : null;
+  if ('payment_paid_date' in clean) clean.payment_paid_date = clean.payment_paid_date ? String(clean.payment_paid_date) : null;
+  if ('payment_notes' in clean) clean.payment_notes = clean.payment_notes ? String(clean.payment_notes).trim() : null;
+  if ('amount_paid' in clean){
+    const n = Number(clean.amount_paid);
+    clean.amount_paid = Number.isFinite(n) ? n : 0;
+  }
+  const { data, error } = await supabaseClient.from('orders').update(clean).eq('id', orderId).select('*');
+  if (error){
+    showBanner(fmtSbError(error));
+    return false;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  const idx = state.orders.findIndex(o => String(o.id) === String(orderId));
+  if (idx >= 0 && row) state.orders[idx] = row;
+  hideBanner();
+  return true;
+}
+
+async function markOrderPaid(orderId){
+  const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
+  if (!order) return;
+  const total = orderContractAmount(order);
+  const ok = await saveOrderPayment(orderId, {
+    payment_status: 'paid',
+    amount_paid: total,
+    payment_paid_date: toISODate(new Date())
+  });
+  if (!ok) return;
+  toast('Payment marked paid', 'ok');
+  renderOrders();
+}
+
 function renderOrders(){
   const wrap = $('ordersTable');
   if (!wrap) return;
 
   const status = $('ordersStatus')?.value || 'all';
+  const paymentFilter = $('ordersPaymentFilter')?.value || 'all';
   const showArchived = $('ordersShowArchived')?.checked === true;
   const q = String($('ordersSearch')?.value || '').toLowerCase();
 
   let rows = state.orders.slice();
   if (!showArchived) rows = rows.filter(o => o?.is_deleted !== true);
   if (status !== 'all') rows = rows.filter(o => stageLabelForOrder(o) === status);
+  if (paymentFilter !== 'all') rows = rows.filter(o => orderPaymentFilterMatch(o, paymentFilter));
   if (q) rows = rows.filter(o =>
     String(o.biz_name||o.business_name||'').toLowerCase().includes(q) ||
     String(o.address||'').toLowerCase().includes(q) ||
     String(o.order_id||o.id||'').toLowerCase().includes(q)
   );
+
+  renderOrderPaymentSummary(rows);
 
   const html = [];
   html.push(`<table><thead><tr>
@@ -1810,25 +1945,67 @@ function renderOrders(){
     <th>Address</th>
     <th>Cadence</th>
     <th>Services</th>
-    <th>Preferred day</th>
     <th>Monthly</th>
+    <th>Payment</th>
+    <th>Due date</th>
+    <th>Paid / Balance</th>
     <th>Status</th>
     <th>Actions</th>
   </tr></thead><tbody>`);
 
   for (const o of rows.slice(0, 400)){
+    const total = orderContractAmount(o);
+    const paid = orderAmountPaid(o);
+    const balance = orderBalanceDue(o);
+    const due = String(o.payment_due_date || '').slice(0,10);
+    const paidDate = String(o.payment_paid_date || '').slice(0,10);
+    const payStatus = normalizedPaymentStatus(o);
+    const dueHint = isPaymentOverdue(o)
+      ? `<div class="muted payment-alert">Overdue</div>`
+      : (paidDate ? `<div class="muted">Paid ${escapeHtml(paidDate)}</div>` : '<div class="muted">—</div>');
+    const notesBtn = String(o.payment_notes || '').trim()
+      ? `<button class="btn btn-mini ghost" data-act="notes">Notes</button>`
+      : `<button class="btn btn-mini ghost" data-act="notes">Add note</button>`;
+
     html.push(`<tr data-order-id="${escapeHtml(o.id)}">
       <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
       <td>${escapeHtml(o.address||'')}</td>
       <td>${escapeHtml(o.cadence||'')}</td>
       <td class="muted">${escapeHtml(servicesLabel(o) || String(getCansCount(o)))} </td>
-      <td>${escapeHtml(o.preferred_service_day||'')}</td>
-      <td>${escapeHtml(fmtMoney(o.monthly_total || o.due_today || 0))}</td>
+      <td>${escapeHtml(fmtMoney(total))}</td>
+      <td>
+        <div class="payment-cell">
+          ${paymentBadgeHtml(o)}
+          <select class="input payment-status-select">
+            <option value="needs_invoice" ${payStatus==='needs_invoice'?'selected':''}>needs invoice</option>
+            <option value="unpaid" ${payStatus==='unpaid'?'selected':''}>unpaid</option>
+            <option value="partial" ${payStatus==='partial'?'selected':''}>partial</option>
+            <option value="paid" ${payStatus==='paid'?'selected':''}>paid</option>
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="payment-cell">
+          <input type="date" class="input payment-due-input" value="${escapeHtml(due)}" />
+          ${dueHint}
+        </div>
+      </td>
+      <td>
+        <div class="payment-cell">
+          <input type="number" min="0" step="0.01" class="input payment-paid-input" value="${escapeHtml(String(paid || ''))}" placeholder="0.00" />
+          <div class="muted">Bal ${escapeHtml(fmtMoney(balance))}</div>
+        </div>
+      </td>
       <td>${escapeHtml(stageLabelForOrder(o))}</td>
       <td>
-        <button class="btn btn-mini ghost" data-act="route">Open route</button>
-        <button class="btn btn-mini" data-act="cancel">Cancel</button>
-        <button class="btn btn-mini outline" data-act="archive">Archive</button>
+        <div class="actions order-actions">
+          <button class="btn btn-mini outline" data-act="save-payment">Save payment</button>
+          <button class="btn btn-mini" data-act="mark-paid">Mark paid</button>
+          ${notesBtn}
+          <button class="btn btn-mini ghost" data-act="route">Open route</button>
+          <button class="btn btn-mini" data-act="cancel">Cancel</button>
+          <button class="btn btn-mini outline" data-act="archive">Archive</button>
+        </div>
       </td>
     </tr>`);
   }
@@ -1844,6 +2021,37 @@ function renderOrders(){
       if (act === 'route') return openOrderInRoute(orderId);
       if (act === 'cancel') return cancelOrder(orderId);
       if (act === 'archive') return archiveOrder(orderId);
+      if (act === 'mark-paid') return markOrderPaid(orderId);
+      if (act === 'notes'){
+        if (state.supportsPaymentTracking === false) return toast('Run the schema patch first', 'warn');
+        const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
+        const next = window.prompt('Payment notes', String(order?.payment_notes || ''));
+        if (next === null) return;
+        const ok = await saveOrderPayment(orderId, { payment_notes: next });
+        if (!ok) return;
+        toast('Payment notes saved', 'ok');
+        return renderOrders();
+      }
+      if (act === 'save-payment'){
+        if (state.supportsPaymentTracking === false) return toast('Run the schema patch first', 'warn');
+        const statusSel = tr.querySelector('.payment-status-select');
+        const dueInput = tr.querySelector('.payment-due-input');
+        const paidInput = tr.querySelector('.payment-paid-input');
+        const amtPaid = Number(paidInput?.value || 0) || 0;
+        const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
+        const total = orderContractAmount(order || {});
+        const chosen = String(statusSel?.value || 'unpaid');
+        const inferredStatus = amtPaid >= total && total > 0 ? 'paid' : (amtPaid > 0 ? (chosen === 'needs_invoice' ? 'partial' : chosen) : chosen);
+        const ok = await saveOrderPayment(orderId, {
+          payment_status: inferredStatus,
+          payment_due_date: dueInput?.value || null,
+          amount_paid: amtPaid,
+          payment_paid_date: inferredStatus === 'paid' ? toISODate(new Date()) : null
+        });
+        if (!ok) return;
+        toast('Payment updated', 'ok');
+        renderOrders();
+      }
     });
   });
 }

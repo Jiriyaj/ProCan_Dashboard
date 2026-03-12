@@ -345,12 +345,26 @@
 </div>
 <div class="filters">
 <select id="ordersStatus"></select>
+<select id="ordersPaymentFilter">
+  <option value="all">All payments</option>
+  <option value="needs_invoice">Needs invoice</option>
+  <option value="open_balance">Open balance</option>
+  <option value="paid">Paid</option>
+  <option value="overdue">Overdue</option>
+</select>
 <input id="ordersSearch" placeholder="Search business / address…" type="search"/>
 <label class="chip" style="display:flex;align-items:center;gap:8px;user-select:none;">
   <input type="checkbox" id="ordersShowArchived" />
   <span>Show archived</span>
 </label>
 </div>
+</div>
+<div class="grid kpis order-payment-kpis" id="orderPaymentsSummary">
+  <div class="card kpi">
+    <div class="kpi-label">Open balance</div>
+    <div class="kpi-value">$0</div>
+    <div class="kpi-sub">Run schema patch to enable tracking</div>
+  </div>
 </div>
 <div class="table" id="ordersTable"></div>
 </div>
