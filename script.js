@@ -13,6 +13,10 @@ async function probeSchema(){
       state.supportsOrdersRouteId = true;
     }
   }catch(e){}
+  try{
+    const sh = await supabaseClient.from('orders').select('id,service_hold').limit(1);
+    if (sh.error) state.supportsServiceHold = false;
+  }catch(e){ state.supportsServiceHold = false; }
 
   // Detect service confirmation tables (route_runs + route_run_stops)
   try{
@@ -635,6 +639,8 @@ const state = {
   orders: [],
   supportsRouteOperatorId: true,
   supportsPaymentTracking: true,
+  supportsServiceHold: true,
+  selectedOrderId: null,
   assignments: [],
   payoutMode: "percent", // "percent" (30) or "fraction" (0.30)
   map: null,
@@ -1918,6 +1924,220 @@ async function markOrderPaid(orderId){
   renderOrders();
 }
 
+
+function routeForOrder(order){
+  const rid = order?.route_id || null;
+  return rid ? (state.routes||[]).find(r => String(r.id) === String(rid)) : null;
+}
+
+function serviceStartForOrder(order){
+  return String(order?.route_start_date || routeForOrder(order)?.service_start_date || '').slice(0,10);
+}
+
+function billingMonitorState(order){
+  const life = String(order?.status || '').toLowerCase();
+  const stripeStatus = String(order?.stripe_status || '').toLowerCase();
+  const stripePay = String(order?.stripe_payment_status || '').toLowerCase();
+  if (order?.is_deleted === true) return 'archived';
+  if (life.startsWith('cancelled') || stripeStatus.includes('cancel')) return 'cancelled';
+  if (order?.service_hold === true || String(order?.service_hold||'').toLowerCase()==='true') return 'halted';
+  if (isPaymentOverdue(order)) return 'past_due';
+  if (['past_due','unpaid','incomplete','incomplete_expired'].includes(stripePay)) return 'past_due';
+  if ((stageLabelForOrder(order) === 'route active' || stageLabelForOrder(order) === 'on route') && !order?.stripe_subscription_id) return 'attention';
+  if (normalizedPaymentStatus(order) === 'partial') return 'attention';
+  if (normalizedPaymentStatus(order) === 'needs_invoice') return 'needs_invoice';
+  return 'healthy';
+}
+
+function billingMonitorLabel(order){
+  const st = billingMonitorState(order);
+  const map = {
+    healthy: 'healthy',
+    attention: 'attention',
+    past_due: 'past due',
+    cancelled: 'cancelled',
+    halted: 'service hold',
+    archived: 'archived',
+    needs_invoice: 'needs invoice'
+  };
+  return map[st] || st;
+}
+
+function billingMonitorBadge(order){
+  const st = billingMonitorState(order);
+  let cls = 'blue';
+  if (st === 'healthy') cls = 'ok';
+  else if (st === 'attention' || st === 'needs_invoice') cls = 'brand';
+  else if (st === 'past_due' || st === 'cancelled' || st === 'halted') cls = 'warn';
+  return `<span class="badge ${cls}"><span class="dot"></span>${escapeHtml(billingMonitorLabel(order))}</span>`;
+}
+
+function shouldHaltService(order){
+  if (order?.service_hold === true || String(order?.service_hold||'').toLowerCase()==='true') return true;
+  const b = billingMonitorState(order);
+  return b === 'cancelled' || b === 'past_due';
+}
+
+function haltReason(order){
+  if (order?.service_hold_reason) return String(order.service_hold_reason);
+  const b = billingMonitorState(order);
+  if (b === 'cancelled') return 'Customer cancelled billing';
+  if (b === 'past_due') return 'Billing issue or overdue payment';
+  return 'Service can continue';
+}
+
+function orderBillingFilterMatch(order, filter){
+  if (filter === 'all') return true;
+  const b = billingMonitorState(order);
+  if (filter === 'healthy') return b === 'healthy';
+  if (filter === 'attention') return b === 'attention' || b === 'needs_invoice';
+  if (filter === 'past_due') return b === 'past_due';
+  if (filter === 'cancelled') return b === 'cancelled';
+  if (filter === 'halted') return shouldHaltService(order);
+  return true;
+}
+
+function renderOrdersMonitorSummary(rows){
+  const wrap = $('orderPaymentsSummary');
+  if (!wrap) return;
+  const healthy = rows.filter(o => billingMonitorState(o) === 'healthy').length;
+  const attention = rows.filter(o => ['attention','needs_invoice'].includes(billingMonitorState(o))).length;
+  const pastDue = rows.filter(o => billingMonitorState(o) === 'past_due');
+  const cancelled = rows.filter(o => billingMonitorState(o) === 'cancelled').length;
+  const halted = rows.filter(o => shouldHaltService(o) && billingMonitorState(o) !== 'cancelled').length;
+  const pastDueAmt = pastDue.reduce((s,o)=>s + orderBalanceDue(o),0);
+  wrap.innerHTML = `
+    <div class="card kpi">
+      <div class="kpi-label">Billing healthy</div>
+      <div class="kpi-value">${healthy}</div>
+      <div class="kpi-sub">Subscriptions/payments look clear</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Needs attention</div>
+      <div class="kpi-value">${attention}</div>
+      <div class="kpi-sub">Missing subscription, invoice, or partial pay</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Past due exposure</div>
+      <div class="kpi-value">${escapeHtml(fmtMoney(pastDueAmt))}</div>
+      <div class="kpi-sub">${pastDue.length} account${pastDue.length===1?'':'s'} at risk</div>
+    </div>
+    <div class="card kpi">
+      <div class="kpi-label">Cancel / halt</div>
+      <div class="kpi-value">${cancelled + halted}</div>
+      <div class="kpi-sub">${cancelled} cancelled • ${halted} halted</div>
+    </div>`;
+}
+
+async function updateOrderFields(orderId, patch){
+  const { data, error } = await supabaseClient.from('orders').update(patch).eq('id', orderId).select('*');
+  if (error){
+    showBanner(fmtSbError(error));
+    return false;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  const idx = state.orders.findIndex(o => String(o.id) === String(orderId));
+  if (idx >= 0 && row) state.orders[idx] = row;
+  hideBanner();
+  return true;
+}
+
+function renderOrderInspector(orderId){
+  const wrap = $('ordersInspector');
+  if (!wrap) return;
+  const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
+  if (!order){
+    wrap.innerHTML = '<div class="muted">Select an order to inspect its billing and service status.</div>';
+    return;
+  }
+  const route = routeForOrder(order);
+  const title = order.biz_name || order.business_name || order.contact_name || 'Order';
+  const total = orderContractAmount(order);
+  const paid = orderAmountPaid(order);
+  const bal = orderBalanceDue(order);
+  const start = serviceStartForOrder(order) || '—';
+  const stripeCust = order?.stripe_customer_id || '—';
+  const stripeSub = order?.stripe_subscription_id || '—';
+  const hold = shouldHaltService(order);
+  const holdManual = order?.service_hold === true || String(order?.service_hold||'').toLowerCase()==='true';
+  wrap.innerHTML = `
+    <div class="orders-inspector-head">
+      <div>
+        <div class="card-title">${escapeHtml(title)}</div>
+        <div class="card-sub">${escapeHtml(order.address || '')}</div>
+      </div>
+      ${billingMonitorBadge(order)}
+    </div>
+    <div class="orders-inspector-grid">
+      <div class="card inner">
+        <div class="card-title-sm">Operations</div>
+        <div class="kv"><span>Stage</span><b>${escapeHtml(stageLabelForOrder(order))}</b></div>
+        <div class="kv"><span>Route</span><b>${escapeHtml(route?.name || 'Unassigned')}</b></div>
+        <div class="kv"><span>Service start</span><b>${escapeHtml(start)}</b></div>
+        <div class="kv"><span>Cadence</span><b>${escapeHtml(order.cadence || route?.cadence || '—')}</b></div>
+        <div class="kv"><span>Services</span><b>${escapeHtml(servicesLabel(order) || '—')}</b></div>
+      </div>
+      <div class="card inner">
+        <div class="card-title-sm">Billing</div>
+        <div class="kv"><span>Monthly</span><b>${escapeHtml(fmtMoney(total))}</b></div>
+        <div class="kv"><span>Paid</span><b>${escapeHtml(fmtMoney(paid))}</b></div>
+        <div class="kv"><span>Open balance</span><b>${escapeHtml(fmtMoney(bal))}</b></div>
+        <div class="kv"><span>Due date</span><b>${escapeHtml(String(order.payment_due_date || '').slice(0,10) || '—')}</b></div>
+        <div class="kv"><span>Payment state</span><b>${escapeHtml(paymentDisplayLabel(order))}</b></div>
+      </div>
+      <div class="card inner">
+        <div class="card-title-sm">Stripe monitoring</div>
+        <div class="kv"><span>Customer ID</span><b class="mono">${escapeHtml(stripeCust)}</b></div>
+        <div class="kv"><span>Subscription ID</span><b class="mono">${escapeHtml(stripeSub)}</b></div>
+        <div class="kv"><span>Stripe status</span><b>${escapeHtml(String(order.stripe_status || '—'))}</b></div>
+        <div class="kv"><span>Stripe payment</span><b>${escapeHtml(String(order.stripe_payment_status || '—'))}</b></div>
+        <div class="kv"><span>Service decision</span><b>${hold ? 'HALT SERVICE' : 'continue service'}</b></div>
+      </div>
+    </div>
+    <div class="card inner order-inspector-alert ${hold ? 'alert-warn' : 'alert-ok'}">
+      <div class="card-title-sm">Service hold</div>
+      <div class="muted">${escapeHtml(haltReason(order))}${holdManual ? ' (manual override)' : ''}</div>
+      <div class="actions" style="justify-content:flex-start; margin-top:12px;">
+        <button class="btn btn-mini outline" data-inspector-act="route">Open route</button>
+        <button class="btn btn-mini ghost" data-inspector-act="notes">Billing notes</button>
+        ${state.supportsServiceHold === false ? '<button class="btn btn-mini ghost" disabled title="Run the schema patch to enable service hold controls">Hold controls unavailable</button>' : (holdManual ? '<button class="btn btn-mini" data-inspector-act="resume">Resume service</button>' : '<button class="btn btn-mini" data-inspector-act="hold">Place hold</button>')}
+        <button class="btn btn-mini" data-inspector-act="mark-paid">Mark paid</button>
+        <button class="btn btn-mini" data-inspector-act="cancel">Cancel</button>
+      </div>
+    </div>
+    <div class="muted" style="margin-top:10px;">${order?.payment_notes ? escapeHtml(String(order.payment_notes)) : 'No billing notes yet.'}</div>`;
+
+  wrap.querySelectorAll('button[data-inspector-act]').forEach(btn => {
+    btn.addEventListener('click', async ()=>{
+      const act = btn.dataset.inspectorAct;
+      if (act === 'route') return openOrderInRoute(order.id);
+      if (act === 'cancel') return cancelOrder(order.id);
+      if (act === 'mark-paid') return markOrderPaid(order.id);
+      if (act === 'notes'){
+        const next = window.prompt('Billing notes', String(order?.payment_notes || ''));
+        if (next === null) return;
+        const ok = await saveOrderPayment(order.id, { payment_notes: next });
+        if (!ok) return;
+        renderOrders();
+      }
+      if (act === 'hold'){
+        const reason = window.prompt('Why should service halt?', String(order?.service_hold_reason || 'Payment issue / manual hold'));
+        if (reason === null) return;
+        const ok = await updateOrderFields(order.id, { service_hold: true, service_hold_reason: reason || 'Manual hold', service_hold_since: new Date().toISOString() });
+        if (!ok) return;
+        toast('Service hold saved', 'ok');
+        renderOrders();
+      }
+      if (act === 'resume'){
+        const ok = await updateOrderFields(order.id, { service_hold: false, service_hold_reason: null, service_hold_since: null });
+        if (!ok) return;
+        toast('Service resumed', 'ok');
+        renderOrders();
+      }
+    });
+  });
+}
+
 function renderOrders(){
   const wrap = $('ordersTable');
   if (!wrap) return;
@@ -1930,130 +2150,104 @@ function renderOrders(){
   let rows = state.orders.slice();
   if (!showArchived) rows = rows.filter(o => o?.is_deleted !== true);
   if (status !== 'all') rows = rows.filter(o => stageLabelForOrder(o) === status);
-  if (paymentFilter !== 'all') rows = rows.filter(o => orderPaymentFilterMatch(o, paymentFilter));
+  if (paymentFilter !== 'all') rows = rows.filter(o => orderBillingFilterMatch(o, paymentFilter));
   if (q) rows = rows.filter(o =>
     String(o.biz_name||o.business_name||'').toLowerCase().includes(q) ||
     String(o.address||'').toLowerCase().includes(q) ||
     String(o.order_id||o.id||'').toLowerCase().includes(q)
   );
 
-  renderOrderPaymentSummary(rows);
+  renderOrdersMonitorSummary(rows);
+  if (!state.selectedOrderId || !rows.some(o => String(o.id) === String(state.selectedOrderId))){
+    state.selectedOrderId = rows[0]?.id || null;
+  }
 
   const html = [];
   html.push(`<table><thead><tr>
-    <th>Business</th>
-    <th>Address</th>
-    <th>Cadence</th>
-    <th>Services</th>
-    <th>Monthly</th>
-    <th>Payment</th>
-    <th>Due date</th>
-    <th>Paid / Balance</th>
-    <th>Status</th>
+    <th>Customer</th>
+    <th>Ops stage</th>
+    <th>Route / start</th>
+    <th>Billing</th>
+    <th>Stripe</th>
+    <th>Service</th>
+    <th>Balance</th>
     <th>Actions</th>
   </tr></thead><tbody>`);
 
   for (const o of rows.slice(0, 400)){
+    const route = routeForOrder(o);
     const total = orderContractAmount(o);
-    const paid = orderAmountPaid(o);
-    const balance = orderBalanceDue(o);
-    const due = String(o.payment_due_date || '').slice(0,10);
-    const paidDate = String(o.payment_paid_date || '').slice(0,10);
-    const payStatus = normalizedPaymentStatus(o);
-    const dueHint = isPaymentOverdue(o)
-      ? `<div class="muted payment-alert">Overdue</div>`
-      : (paidDate ? `<div class="muted">Paid ${escapeHtml(paidDate)}</div>` : '<div class="muted">—</div>');
-    const notesBtn = String(o.payment_notes || '').trim()
-      ? `<button class="btn btn-mini ghost" data-act="notes">Notes</button>`
-      : `<button class="btn btn-mini ghost" data-act="notes">Add note</button>`;
-
-    html.push(`<tr data-order-id="${escapeHtml(o.id)}">
-      <td>${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</td>
-      <td>${escapeHtml(o.address||'')}</td>
-      <td>${escapeHtml(o.cadence||'')}</td>
-      <td class="muted">${escapeHtml(servicesLabel(o) || String(getCansCount(o)))} </td>
-      <td>${escapeHtml(fmtMoney(total))}</td>
+    const bal = orderBalanceDue(o);
+    const start = serviceStartForOrder(o);
+    const activeCls = String(state.selectedOrderId) === String(o.id) ? ' class="is-selected"' : '';
+    const quickAction = shouldHaltService(o) ? 'Review hold' : (billingMonitorState(o) === 'healthy' ? 'Healthy' : 'Needs review');
+    html.push(`<tr data-order-id="${escapeHtml(o.id)}"${activeCls}>
       <td>
-        <div class="payment-cell">
-          ${paymentBadgeHtml(o)}
-          <select class="input payment-status-select">
-            <option value="needs_invoice" ${payStatus==='needs_invoice'?'selected':''}>needs invoice</option>
-            <option value="unpaid" ${payStatus==='unpaid'?'selected':''}>unpaid</option>
-            <option value="partial" ${payStatus==='partial'?'selected':''}>partial</option>
-            <option value="paid" ${payStatus==='paid'?'selected':''}>paid</option>
-          </select>
-        </div>
+        <div class="title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
+        <div class="sub">${escapeHtml(o.address||'')}</div>
+      </td>
+      <td>
+        <div>${escapeHtml(stageLabelForOrder(o))}</div>
+        <div class="sub">${escapeHtml(servicesLabel(o) || '—')}</div>
+      </td>
+      <td>
+        <div>${escapeHtml(route?.name || 'Unassigned')}</div>
+        <div class="sub">${escapeHtml(start || 'No start date')}</div>
       </td>
       <td>
         <div class="payment-cell">
-          <input type="date" class="input payment-due-input" value="${escapeHtml(due)}" />
-          ${dueHint}
+          ${billingMonitorBadge(o)}
+          <div class="sub">${escapeHtml(paymentDisplayLabel(o))}</div>
         </div>
       </td>
       <td>
-        <div class="payment-cell">
-          <input type="number" min="0" step="0.01" class="input payment-paid-input" value="${escapeHtml(String(paid || ''))}" placeholder="0.00" />
-          <div class="muted">Bal ${escapeHtml(fmtMoney(balance))}</div>
-        </div>
+        <div class="sub mono">${escapeHtml(o?.stripe_subscription_id ? String(o.stripe_subscription_id).slice(0,18)+'…' : 'No subscription')}</div>
+        <div class="sub">${escapeHtml(String(o?.stripe_payment_status || o?.stripe_status || '—'))}</div>
       </td>
-      <td>${escapeHtml(stageLabelForOrder(o))}</td>
+      <td>
+        <div class="service-flag ${shouldHaltService(o) ? 'stop' : 'go'}">${shouldHaltService(o) ? 'HALT' : 'GO'}</div>
+        <div class="sub">${escapeHtml(haltReason(o))}</div>
+      </td>
+      <td>
+        <div>${escapeHtml(fmtMoney(bal))}</div>
+        <div class="sub">of ${escapeHtml(fmtMoney(total))}</div>
+      </td>
       <td>
         <div class="actions order-actions">
-          <button class="btn btn-mini outline" data-act="save-payment">Save payment</button>
-          <button class="btn btn-mini" data-act="mark-paid">Mark paid</button>
-          ${notesBtn}
+          <button class="btn btn-mini outline" data-act="inspect">Inspect</button>
           <button class="btn btn-mini ghost" data-act="route">Open route</button>
           <button class="btn btn-mini" data-act="cancel">Cancel</button>
-          <button class="btn btn-mini outline" data-act="archive">Archive</button>
         </div>
+        <div class="sub" style="margin-top:6px;">${escapeHtml(quickAction)}</div>
       </td>
     </tr>`);
   }
   html.push(`</tbody></table>`);
   wrap.innerHTML = html.join('');
 
+  wrap.querySelectorAll('tr[data-order-id]').forEach(tr=>{
+    tr.addEventListener('click', (e)=>{
+      if (e.target.closest('button')) return;
+      state.selectedOrderId = tr.dataset.orderId;
+      renderOrders();
+    });
+  });
+
   wrap.querySelectorAll('button[data-act]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
+    btn.addEventListener('click', async (e)=>{
+      e.stopPropagation();
       const tr = btn.closest('tr');
       const orderId = tr?.dataset.orderId;
       if (!orderId) return;
+      state.selectedOrderId = orderId;
       const act = btn.dataset.act;
+      if (act === 'inspect') return renderOrders();
       if (act === 'route') return openOrderInRoute(orderId);
       if (act === 'cancel') return cancelOrder(orderId);
-      if (act === 'archive') return archiveOrder(orderId);
-      if (act === 'mark-paid') return markOrderPaid(orderId);
-      if (act === 'notes'){
-        if (state.supportsPaymentTracking === false) return toast('Run the schema patch first', 'warn');
-        const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
-        const next = window.prompt('Payment notes', String(order?.payment_notes || ''));
-        if (next === null) return;
-        const ok = await saveOrderPayment(orderId, { payment_notes: next });
-        if (!ok) return;
-        toast('Payment notes saved', 'ok');
-        return renderOrders();
-      }
-      if (act === 'save-payment'){
-        if (state.supportsPaymentTracking === false) return toast('Run the schema patch first', 'warn');
-        const statusSel = tr.querySelector('.payment-status-select');
-        const dueInput = tr.querySelector('.payment-due-input');
-        const paidInput = tr.querySelector('.payment-paid-input');
-        const amtPaid = Number(paidInput?.value || 0) || 0;
-        const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
-        const total = orderContractAmount(order || {});
-        const chosen = String(statusSel?.value || 'unpaid');
-        const inferredStatus = amtPaid >= total && total > 0 ? 'paid' : (amtPaid > 0 ? (chosen === 'needs_invoice' ? 'partial' : chosen) : chosen);
-        const ok = await saveOrderPayment(orderId, {
-          payment_status: inferredStatus,
-          payment_due_date: dueInput?.value || null,
-          amount_paid: amtPaid,
-          payment_paid_date: inferredStatus === 'paid' ? toISODate(new Date()) : null
-        });
-        if (!ok) return;
-        toast('Payment updated', 'ok');
-        renderOrders();
-      }
     });
   });
+
+  renderOrderInspector(state.selectedOrderId);
 }
 
 async function archiveOrder(orderId){

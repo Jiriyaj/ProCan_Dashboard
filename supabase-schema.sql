@@ -75,7 +75,10 @@ ALTER TABLE public.orders
 ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS is_deleted boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS deleted_at timestamptz,
-  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz;
+  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
+  ADD COLUMN IF NOT EXISTS service_hold boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS service_hold_reason text,
+  ADD COLUMN IF NOT EXISTS service_hold_since timestamptz;
 
 
 
