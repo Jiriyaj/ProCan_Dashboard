@@ -128,7 +128,11 @@ function orderTrashMonthlyAmount(o){
 function orderPadMonthlyAmount(o){
   const explicit = moneyNum(o?.pad_monthly_total ?? o?.pad_monthly_value);
   if (explicit > 0) return explicit;
-  return getPadInfo(o).enabled ? 0 : 0;
+  const p = getPadInfo(o);
+  if (!p.enabled) return 0;
+  const key = String(p.size || '').toLowerCase();
+  const fallback = { small:75, medium:125, large:200 };
+  return moneyNum(fallback[key] || 0);
 }
 function orderPriceSnapshotLabel(o){
   const bits = [];
