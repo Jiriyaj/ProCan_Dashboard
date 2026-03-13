@@ -2126,6 +2126,52 @@ function serviceStartForOrder(order){
   return String(order?.route_start_date || routeForOrder(order)?.service_start_date || '').slice(0,10);
 }
 
+
+function computeOrderServiceWindow(order){
+  const route = routeForOrder(order);
+  const cadence = String(order?.cadence || route?.cadence || '').toLowerCase();
+  const anchor = parseISODate(order?.route_start_date || route?.service_start_date);
+  const last = parseISODate(order?.last_service_date);
+  const today = new Date();
+  today.setHours(0,0,0,0);
+
+  if (!anchor) {
+    return { label:'Awaiting start date', tone:'muted', sortDays:99999, dueDate:null };
+  }
+
+  let due = null;
+  if (last) {
+    due = cadence.includes('month') ? addMonths(last, 1) : addDays(last, 14);
+  } else {
+    due = new Date(anchor.getTime());
+  }
+  due.setHours(0,0,0,0);
+
+  const diff = daysBetween(today, due);
+  if (diff == null) {
+    return { label:'Service timing unknown', tone:'muted', sortDays:99998, dueDate:null };
+  }
+  if (diff < 0) {
+    return { label:`Past due ${Math.abs(diff)}d`, tone:'danger', sortDays:diff, dueDate:toISODate(due) };
+  }
+  if (diff === 0) {
+    return { label:'Due today', tone:'danger', sortDays:0, dueDate:toISODate(due) };
+  }
+  if (!last && diff > 0) {
+    return { label:`Starts in ${diff}d`, tone:diff <= 3 ? 'warn' : 'ok', sortDays:diff, dueDate:toISODate(due) };
+  }
+  if (diff <= 3) {
+    return { label:`Due in ${diff}d`, tone:'warn', sortDays:diff, dueDate:toISODate(due) };
+  }
+  return { label:`Due in ${diff}d`, tone:'ok', sortDays:diff, dueDate:toISODate(due) };
+}
+
+function orderServiceWindowBadge(order){
+  const meta = computeOrderServiceWindow(order);
+  const cls = meta.tone === 'danger' ? 'warn' : (meta.tone === 'ok' ? 'ok' : '');
+  return `<span class="badge ${cls}"><span class="dot"></span>${escapeHtml(meta.label)}</span>`;
+}
+
 function billingMonitorState(order){
   const life = String(order?.status || '').toLowerCase();
   const stripeStatus = String(order?.stripe_status || '').toLowerCase();
@@ -2259,6 +2305,8 @@ function renderOrderInspector(orderId){
         <div class="kv"><span>Ops stage</span><b>${escapeHtml(stageLabelForOrder(order))}</b></div>
         <div class="kv"><span>Route</span><b>${escapeHtml(route?.name || 'Unassigned')}</b></div>
         <div class="kv"><span>Start date</span><b>${escapeHtml(start)}</b></div>
+        <div class="kv"><span>Service timing</span><b>${escapeHtml(computeOrderServiceWindow(order).label)}</b></div>
+        <div class="kv"><span>Next due date</span><b>${escapeHtml(computeOrderServiceWindow(order).dueDate || '—')}</b></div>
         <div class="kv"><span>Cadence</span><b>${escapeHtml(order.cadence || route?.cadence || '—')}</b></div>
         <div class="kv"><span>Services</span><b>${escapeHtml(servicesLabel(order) || '—')}</b></div>
       </div>
@@ -2378,19 +2426,20 @@ function renderOrders(){
             <div class="order-meta-sub">${escapeHtml(start)}</div>
           </div>
           <div class="order-meta">
+            <div class="order-meta-label">Service timing</div>
+            <div class="order-meta-value">${escapeHtml(computeOrderServiceWindow(o).label)}</div>
+            <div class="order-meta-sub">${escapeHtml(computeOrderServiceWindow(o).dueDate || '—')}</div>
+          </div>
+          <div class="order-meta">
             <div class="order-meta-label">Billing</div>
             <div class="order-meta-value">${escapeHtml(billingMonitorLabel(o))}</div>
             <div class="order-meta-sub">${escapeHtml(paymentDisplayLabel(o))}</div>
-          </div>
-          <div class="order-meta">
-            <div class="order-meta-label">Balance</div>
-            <div class="order-meta-value">${escapeHtml(fmtMoney(bal))}</div>
-            <div class="order-meta-sub">${escapeHtml(fmtMoney(total))} monthly</div>
           </div>
         </div>
         <div class="order-card-bottom">
           <div class="badges">
             <span class="badge">${escapeHtml(stageLabelForOrder(o))}</span>
+            ${orderServiceWindowBadge(o)}
             <span class="badge ${shouldHaltService(o) ? 'warn' : 'ok'}">${escapeHtml(serviceDecision)}</span>
             ${billing === 'cancelled' ? '<span class="badge warn">cancelled</span>' : ''}
           </div>
