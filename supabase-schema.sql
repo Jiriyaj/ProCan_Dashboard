@@ -219,7 +219,9 @@ ALTER TABLE public.orders
   ADD COLUMN IF NOT EXISTS base_monthly_total numeric(10,2) DEFAULT 0,
   ADD COLUMN IF NOT EXISTS trash_price_per_can_month numeric(10,2) DEFAULT 0,
   ADD COLUMN IF NOT EXISTS trash_monthly_total numeric(10,2) DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS pad_monthly_total numeric(10,2) DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS pad_monthly_total numeric(10,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS pad_initial_fee_total numeric(10,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS initial_one_time_total numeric(10,2) DEFAULT 0;
 
 -- 7) PAYMENT TRACKING: dashboard-side receivables visibility
 ALTER TABLE public.orders

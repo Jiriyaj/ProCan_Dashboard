@@ -131,8 +131,8 @@ function orderPadMonthlyAmount(o){
   const p = getPadInfo(o);
   if (!p.enabled) return 0;
   const key = String(p.size || '').toLowerCase();
-  const fallback = { small:75, medium:125, large:200 };
-  return moneyNum(fallback[key] || 0);
+  const cadence = String(p.cadence || '').toLowerCase();
+  return moneyNum(DEFAULT_PAD_MONTHLY_BY_CADENCE[key]?.[cadence || 'biweekly'] || 0);
 }
 function orderPriceSnapshotLabel(o){
   const bits = [];
@@ -3584,8 +3584,36 @@ async function openOrderInRoute(orderId){
 
 // --- Operator payout + duration estimates (used in print Route PDF)
 // Fallbacks are only used when the intake/order record does not yet provide pricing snapshots.
-const PRICE_PER_CAN_MONTH = 23;
-const DEFAULT_PAD_MONTHLY_BY_SIZE = { small:75, medium:125, large:200 };
+const TRASH_PRICING = {
+  biweekly: [
+    { min: 1, max: 10, pricePerCanMonth: 25 },
+    { min: 11, max: 20, pricePerCanMonth: 23 },
+    { min: 21, max: 50, pricePerCanMonth: 20 },
+    { min: 51, max: 100, pricePerCanMonth: 18 },
+    { min: 101, max: Infinity, pricePerCanMonth: 16 }
+  ],
+  monthly: [
+    { min: 1, max: 10, pricePerCanMonth: 18 },
+    { min: 11, max: 20, pricePerCanMonth: 16 },
+    { min: 21, max: 50, pricePerCanMonth: 14 },
+    { min: 51, max: Infinity, pricePerCanMonth: 12 }
+  ]
+};
+const DEFAULT_PAD_MONTHLY_BY_CADENCE = {
+  small: { weekly:150, biweekly:100, monthly:75 },
+  medium: { weekly:250, biweekly:175, monthly:125 },
+  large: { weekly:400, biweekly:275, monthly:200 }
+};
+function tierPriceFromTable(rows, qty){
+  const n = Math.max(0, Number(qty || 0));
+  if (!Array.isArray(rows) || !n) return 0;
+  const hit = rows.find(r => n >= Number(r.min || 0) && n <= Number(r.max || Infinity));
+  return moneyNum(hit?.pricePerCanMonth || 0);
+}
+function oneTimeFeeTotal(o){
+  return +(moneyNum(o?.initial_one_time_total ?? o?.initialOneTimeTotal ?? 0) || moneyNum(o?.pad_initial_fee_total ?? 0) + moneyNum(o?.deep_clean_total ?? 0)).toFixed(2);
+}
+
 // Operator revenue share fallback
 const OPERATOR_SHARE = 0.30;
 // Time estimate heuristic (minutes per can). Tweak as needed.
@@ -3721,7 +3749,7 @@ async function printRoutePDF(){
       }
       return idx;
     }
-    return Math.max(0, Math.round(days / 14)); // biweekly
+    return Math.max(0, Math.floor(days / 14)); // biweekly
   })();
 
   // Is stop due on this service date?
@@ -3775,7 +3803,8 @@ async function printRoutePDF(){
     const cansN = getCansCount(o);
     const pricePerCan = moneyNum(o?.trash_price_per_can_month ?? o?.price_per_can_month);
     if (cansN > 0 && pricePerCan > 0) return +(cansN * pricePerCan).toFixed(2);
-    if (cansN > 0) return +(cansN * PRICE_PER_CAN_MONTH).toFixed(2);
+    const serviceCadence = normFreq(o);
+    if (cansN > 0) return +(cansN * tierPriceFromTable(TRASH_PRICING[serviceCadence] || TRASH_PRICING.biweekly, cansN)).toFixed(2);
     return 0;
   };
 
@@ -3785,7 +3814,8 @@ async function printRoutePDF(){
     const p = getPadInfo(o);
     if (!p.enabled) return 0;
     const key = String(p.size || '').toLowerCase();
-    return moneyNum(DEFAULT_PAD_MONTHLY_BY_SIZE[key] || 0);
+    const cadence = normPadFreq(o);
+    return moneyNum(DEFAULT_PAD_MONTHLY_BY_CADENCE[key]?.[cadence || 'biweekly'] || 0);
   };
 
   const applyDiscountShare = (amount, o, componentMonthly) => {
@@ -3817,6 +3847,12 @@ async function printRoutePDF(){
     if (padDue){
       const padPerRun = (routeCadence === 'monthly' || padCadence === 'monthly') ? padMonthly : (padCadence === 'weekly' ? (padMonthly / 4) * 2 : (padMonthly / 2));
       dueRevenue += applyDiscountShare(padPerRun, o, padMonthly);
+    }
+
+    const anchorStart = parseISODate(o?.route_start_date || o?.start_date || r?.service_start_date);
+    const firstServiceRun = !o?.last_service_date && ((anchorStart && toISODate(anchorStart) === serviceISO) || (!anchorStart && runIndex === 0));
+    if (firstServiceRun){
+      dueRevenue += oneTimeFeeTotal(o);
     }
     return +(dueRevenue * operatorShare).toFixed(2);
   };
