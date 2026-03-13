@@ -226,13 +226,59 @@ function renderOrderPaymentSummary(rows){
 
 // ETA heuristic for operator sheets
 const PAD_MINUTES_BY_SIZE = { small: 10, medium: 15, large: 20 };
-function estimateStopMinutes(o){
+const PAD_INITIAL_EXTRA_MINUTES_BY_FEE = { 25: 5, 50: 10, 75: 15 };
+const DEEP_CLEAN_EXTRA_MINUTES_PER_CAN = { standard: 2, heavy: 4, extreme: 6 };
+function getDeepCleanInfo(o){
+  const enabled = (
+    o?.deep_clean_enabled === true ||
+    String(o?.deep_clean_enabled || '').toLowerCase() === 'true' ||
+    o?.deepClean?.enabled === true ||
+    String(o?.metadata?.deepCleanEnabled || '').toLowerCase() === 'true'
+  );
+  const level = String(o?.deep_clean_level ?? o?.deepClean?.level ?? o?.metadata?.deepCleanLevel ?? '').trim().toLowerCase();
+  const qtyRaw = parseInt(String(o?.deep_clean_qty ?? o?.deepClean?.qty ?? o?.metadata?.deepCleanQty ?? ''), 10);
+  const qty = Number.isFinite(qtyRaw) ? qtyRaw : 0;
+  const total = moneyNum(o?.deep_clean_total ?? o?.deepClean?.total ?? o?.metadata?.deepCleanTotal ?? 0);
+  return { enabled: !!enabled || total > 0, level: level || null, qty, total };
+}
+function isFirstServiceRunForOrder(o, serviceISO, runIndex, route){
+  const anchorStart = parseISODate(o?.route_start_date || o?.start_date || route?.service_start_date);
+  return !o?.last_service_date && ((anchorStart && toISODate(anchorStart) === serviceISO) || (!anchorStart && runIndex === 0));
+}
+function estimateStopMinutes(o, opts = {}){
   const cansN = getCansCount(o);
   const pad = getPadInfo(o);
+  const deep = getDeepCleanInfo(o);
+  const includePad = opts.includePad !== false && pad.enabled;
+  const firstServiceRun = !!opts.firstServiceRun;
   const minsCans = cansN * 4; // keep your existing heuristic (EST_MINUTES_PER_CAN)
-  const minsPad = pad.enabled ? (PAD_MINUTES_BY_SIZE[String(pad.size||'').toLowerCase()] || 15) : 0;
-  const total = minsCans + minsPad;
+  const minsPad = includePad ? (PAD_MINUTES_BY_SIZE[String(pad.size||'').toLowerCase()] || 15) : 0;
+  const deepQty = Math.max(0, Math.min(cansN || deep.qty || 0, deep.qty || cansN));
+  const deepExtra = firstServiceRun && deep.enabled
+    ? (DEEP_CLEAN_EXTRA_MINUTES_PER_CAN[String(deep.level||'').toLowerCase()] || 3) * (deepQty || cansN || 0)
+    : 0;
+  const padInitialFee = moneyNum(o?.pad_initial_fee_total ?? o?.padInitialFeeTotal ?? 0);
+  const padExtra = firstServiceRun && includePad && padInitialFee > 0
+    ? (PAD_INITIAL_EXTRA_MINUTES_BY_FEE[padInitialFee] || 5)
+    : 0;
+  const total = minsCans + minsPad + deepExtra + padExtra;
   return Math.max(0, Math.round(total));
+}
+function runUrgencyMeta(runDate){
+  const d = parseISODate(runDate);
+  if (!d) return { label:'Timing unknown', cls:'', sort:99999 };
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  d.setHours(0,0,0,0);
+  const diff = daysBetween(today, d);
+  if (diff < 0) return { label:`Past due ${Math.abs(diff)}d`, cls:'warn', sort:diff };
+  if (diff === 0) return { label:'Due today', cls:'warn', sort:0 };
+  if (diff <= 2) return { label:`Due in ${diff}d`, cls:'warn', sort:diff };
+  return { label:`Due in ${diff}d`, cls:'ok', sort:diff };
+}
+function runUrgencyBadge(runDate){
+  const meta = runUrgencyMeta(runDate);
+  return `<span class="tag ${meta.cls}">${escapeHtml(meta.label)}</span>`;
 }
 const payoutToPercent = (v) => {
   const n = Number(v);
@@ -3079,6 +3125,9 @@ async function loadAndRenderRunHistory(){
 
   const activeDate = state.activeRunDate;
   list.innerHTML = runs.map(r=>{
+    const timing = String(r.status)==='completed'
+      ? '<span class="tag ok">Completed</span>'
+      : runUrgencyBadge(r.service_date);
     const tag = (String(r.status)==='completed')
       ? '<span class="tag ok">Completed</span>'
       : '<span class="tag">In progress</span>';
@@ -3090,7 +3139,7 @@ async function loadAndRenderRunHistory(){
             <div style="font-weight:800;">${escapeHtml(r.service_date)}</div>
             <div class="muted">${escapeHtml(String(r.status||''))}</div>
           </div>
-          <div class="stopMetaRight">${tag}</div>
+          <div class="stopMetaRight" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">${timing}${tag}</div>
         </div>
       </div>
     `;
@@ -3187,8 +3236,9 @@ function renderActiveRunUI(){
   const run = state.activeRun;
   const isCompleted = run && String(run.status) === 'completed';
 
+  const urgency = runUrgencyMeta(state.activeRunDate);
   if (!run){
-    statusText.innerHTML = `<span class="tag warn">Not started</span> Create a run for this date to begin.`;
+    statusText.innerHTML = `<span class="tag warn">Not started</span> ${runUrgencyBadge(state.activeRunDate)} Create a run for this date to begin.`;
     btnStart.disabled = false;
     btnComplete.disabled = true;
   } else if (isCompleted){
@@ -3196,7 +3246,7 @@ function renderActiveRunUI(){
     btnStart.disabled = true;
     btnComplete.disabled = true;
   } else {
-    statusText.innerHTML = `<span class="tag">In progress</span> Started ${escapeHtml(new Date(run.started_at || Date.now()).toLocaleString())}`;
+    statusText.innerHTML = `<span class="tag">In progress</span> ${runUrgencyBadge(state.activeRunDate)} Started ${escapeHtml(new Date(run.started_at || Date.now()).toLocaleString())}`;
     btnStart.disabled = true;
     btnComplete.disabled = false;
   }
@@ -3217,7 +3267,8 @@ function renderActiveRunUI(){
         const name = o.business_name||o.biz_name||o.name||'Order';
         const addr = o.address||o.location||'';
         const svc = servicesLabel(o);
-        const mins = estimateStopMinutes(o);
+        const firstServiceRun = isFirstServiceRunForOrder(o, state.activeRunDate, 0, routeForOrder(o) || {});
+        const mins = estimateStopMinutes(o, { firstServiceRun });
         return `
           <div class="row">
             <div class="stopMeta">
@@ -3226,7 +3277,8 @@ function renderActiveRunUI(){
                 <div class="muted">${escapeHtml(addr)}</div>
                 ${svc ? `<div class="muted">${escapeHtml(svc)} • Est. ${escapeHtml(String(mins))}m</div>` : ''}
               </div>
-              <div class="stopMetaRight">
+              <div class="stopMetaRight" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                ${runUrgencyBadge(state.activeRunDate)}
                 <span class="tag warn">Pending</span>
               </div>
             </div>
@@ -3247,7 +3299,8 @@ function renderActiveRunUI(){
     const name = o.business_name||o.biz_name||o.name||'Order';
     const addr = o.address||o.location||'';
     const svc = servicesLabel(o);
-    const mins = estimateStopMinutes(o);
+    const firstServiceRun = isFirstServiceRunForOrder(o, state.activeRunDate, 0, routeForOrder(o) || {});
+    const mins = estimateStopMinutes(o, { firstServiceRun });
     const tag = s.completed ? '<span class="tag ok">Done</span>' : '<span class="tag warn">Open</span>';
     const dis = isCompleted ? 'disabled' : '';
     return `
@@ -3849,8 +3902,7 @@ async function printRoutePDF(){
       dueRevenue += applyDiscountShare(padPerRun, o, padMonthly);
     }
 
-    const anchorStart = parseISODate(o?.route_start_date || o?.start_date || r?.service_start_date);
-    const firstServiceRun = !o?.last_service_date && ((anchorStart && toISODate(anchorStart) === serviceISO) || (!anchorStart && runIndex === 0));
+    const firstServiceRun = isFirstServiceRunForOrder(o, serviceISO, runIndex, r);
     if (firstServiceRun){
       dueRevenue += oneTimeFeeTotal(o);
     }
@@ -3872,7 +3924,8 @@ async function printRoutePDF(){
       if (dueCans) acc.cansDue += cansN;
       if (duePad) acc.padsDue += 1;
       acc.payout += payoutForStopThisRun(o);
-      acc.estMinutes += ((dueCans ? (cansN * EST_MINUTES_PER_CAN) : 0) + (duePad ? (PAD_MINUTES_BY_SIZE[String(getPadInfo(o).size||'').toLowerCase()] || 15) : 0));
+      const firstServiceRun = isFirstServiceRunForOrder(o, serviceISO, runIndex, r);
+      acc.estMinutes += estimateStopMinutes(o, { firstServiceRun, includePad: duePad && getPadInfo(o).enabled });
     } else {
       acc.stopsSkip += 1;
       acc.cansSkip += cansN;
@@ -3895,8 +3948,15 @@ async function printRoutePDF(){
     const badge = due ? '<span class="badge due">DUE</span>' : '<span class="badge skip">SKIP</span>';
     const hint = due ? '' : ' <span class="muted">(skip this run)</span>';
 
-    const padTxt = duePad ? (padLabel(o) || 'Pad: Yes') : '';
-    const mins = Math.round((dueCans ? cansN * EST_MINUTES_PER_CAN : 0) + (duePad ? (PAD_MINUTES_BY_SIZE[String(getPadInfo(o).size||'').toLowerCase()] || 15) : 0));
+    const padTxt = padLabel(o) || '';
+    const firstServiceRun = isFirstServiceRunForOrder(o, serviceISO, runIndex, r);
+    const mins = estimateStopMinutes(o, { firstServiceRun, includePad: duePad && getPadInfo(o).enabled });
+    const componentNotes = [];
+    if (dueCans && !duePad && getPadInfo(o).enabled) componentNotes.push('Pad skip this run');
+    if (duePad && !dueCans && cansN > 0) componentNotes.push('Cans skip this run');
+    if (!due) componentNotes.push('Skip this run');
+    if (firstServiceRun && moneyNum(oneTimeFeeTotal(o)) > 0) componentNotes.push('Includes initial clean time');
+    const notes = componentNotes.length ? componentNotes.join(' • ') : '';
 
     return `
       <tr>
@@ -3910,7 +3970,7 @@ async function printRoutePDF(){
         <td>${escapeHtml(padTxt)}</td>
         <td>${escapeHtml(String(mins))}</td>
         <td>${escapeHtml(money(pay))}</td>
-        <td>${hint}</td>
+        <td>${hint}${notes ? ` <span class="muted">${escapeHtml(notes)}</span>` : ''}</td>
       </tr>
     `;
   }).join('');
