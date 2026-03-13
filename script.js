@@ -2507,8 +2507,8 @@ async function cancelOrder(orderId){
 
   if (!confirm(`Cancel this order (${mode.replace('_',' ')})? Deposit is forfeited if cancelled before route begins.`)) return;
 
-  // Cancel Stripe subscription via same-origin /api (secured by PROCAN_ROUTE_TOKEN).
-  const token = (localStorage.getItem('PROCAN_ROUTE_TOKEN') || '').trim();
+  // Cancel Stripe subscription via same-origin /api using the current dashboard login session.
+  const token = cachedSession?.access_token || '';
   if (token){
     try{
       const resp = await fetch('/api/order-cancel', {
@@ -2527,7 +2527,7 @@ async function cancelOrder(orderId){
       toast('Stripe cancel failed to fetch', 'warn');
     }
   } else {
-    toast('Cancelled locally (no PROCAN_ROUTE_TOKEN set to cancel Stripe).', 'warn');
+    toast('Billing session expired. Log in again before canceling Stripe.', 'warn');
   }
 
   // Update Supabase order status
@@ -4028,16 +4028,30 @@ async function scheduleRouteStart(){
   renderRoutes();
   renderRouteDetails();
 
-  // Sync billing through the dashboard's own API route (same-origin, no browser token, no CORS).
+  // Sync billing through the dashboard's own API route using the existing Supabase login session.
   try{
+    const token = cachedSession?.access_token || '';
+    if (!token){
+      toast('Route saved, but billing sync needs you logged in again.', 'warn');
+      return;
+    }
+    const headers = {
+      'Content-Type':'application/json',
+      'Authorization':'Bearer ' + token
+    };
+
     const resp = await fetch('/api/schedule-route', {
       method:'POST',
-      headers:{ 'Content-Type':'application/json' },
+      headers,
       body: JSON.stringify({ route_id: rid, service_start_date: startDate, cadence })
     });
     const data = await resp.json().catch(()=> ({}));
     if (!resp.ok){
-      toast('Billing sync failed: ' + (data.error || resp.status), 'warn');
+      if (resp.status === 401) {
+        toast('Route saved, but billing sync needs a valid dashboard session. Log in again and retry.', 'warn');
+      } else {
+        toast('Billing sync failed: ' + (data.error || resp.status), 'warn');
+      }
       return;
     }
     const updated = Number(data.updated_subscriptions || 0);
@@ -4053,7 +4067,7 @@ async function scheduleRouteStart(){
     }
   }catch(err){
     console.error('scheduleRouteStart fetch failed', err);
-    toast('Billing sync failed to fetch', 'warn');
+    toast('Billing sync failed to fetch. Route was still saved.', 'warn');
   }
 }
 
