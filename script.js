@@ -811,6 +811,7 @@ function wireUI(){
   on('ordersPaymentFilter', 'change', () => renderOrders());
   on('ordersShowArchived', 'change', () => renderOrders());
   on('ordersSearch', 'input', () => renderOrders());
+  on('btnRefreshOrders', 'click', async () => { await refreshAll(false); renderOrders(); toast('Orders refreshed','ok'); });
   on('homeCadence', 'change', () => renderHome());
   on('homeAge', 'change', () => renderHome());
   on('homeSearch', 'input', () => renderHome());
@@ -886,6 +887,10 @@ function switchView(viewId){
   if (viewId === 'routeRunsView'){
     // Ensure dropdown + panel are in sync
     renderRouteRunsView();
+  }
+
+  if (viewId === 'ordersView'){
+    renderOrders();
   }
 }
 
@@ -2044,32 +2049,27 @@ function orderBillingFilterMatch(order, filter){
 function renderOrdersMonitorSummary(rows){
   const wrap = $('orderPaymentsSummary');
   if (!wrap) return;
-  const healthy = rows.filter(o => billingMonitorState(o) === 'healthy').length;
-  const attention = rows.filter(o => ['attention','needs_invoice'].includes(billingMonitorState(o))).length;
-  const pastDue = rows.filter(o => billingMonitorState(o) === 'past_due');
-  const cancelled = rows.filter(o => billingMonitorState(o) === 'cancelled').length;
-  const halted = rows.filter(o => shouldHaltService(o) && billingMonitorState(o) !== 'cancelled').length;
-  const pastDueAmt = pastDue.reduce((s,o)=>s + orderBalanceDue(o),0);
+  const active = rows.filter(o => !['cancelled','archived'].includes(billingMonitorState(o))).length;
+  const attention = rows.filter(o => ['attention','needs_invoice','past_due'].includes(billingMonitorState(o))).length;
+  const cancelledOrHalted = rows.filter(o => {
+    const st = billingMonitorState(o);
+    return st === 'cancelled' || shouldHaltService(o);
+  }).length;
   wrap.innerHTML = `
     <div class="card kpi">
-      <div class="kpi-label">Billing healthy</div>
-      <div class="kpi-value">${healthy}</div>
-      <div class="kpi-sub">Subscriptions/payments look clear</div>
+      <div class="kpi-label">Active orders</div>
+      <div class="kpi-value">${active}</div>
+      <div class="kpi-sub">Orders still in play for launch and route work</div>
     </div>
     <div class="card kpi">
       <div class="kpi-label">Needs attention</div>
       <div class="kpi-value">${attention}</div>
-      <div class="kpi-sub">Missing subscription, invoice, or partial pay</div>
+      <div class="kpi-sub">Billing or setup issue that could block service</div>
     </div>
     <div class="card kpi">
-      <div class="kpi-label">Past due exposure</div>
-      <div class="kpi-value">${escapeHtml(fmtMoney(pastDueAmt))}</div>
-      <div class="kpi-sub">${pastDue.length} account${pastDue.length===1?'':'s'} at risk</div>
-    </div>
-    <div class="card kpi">
-      <div class="kpi-label">Cancel / halt</div>
-      <div class="kpi-value">${cancelled + halted}</div>
-      <div class="kpi-sub">${cancelled} cancelled • ${halted} halted</div>
+      <div class="kpi-label">Cancelled / halted</div>
+      <div class="kpi-value">${cancelledOrHalted}</div>
+      <div class="kpi-sub">Orders that should not quietly keep running</div>
     </div>`;
 }
 
@@ -2091,7 +2091,7 @@ function renderOrderInspector(orderId){
   if (!wrap) return;
   const order = (state.orders||[]).find(o => String(o.id) === String(orderId));
   if (!order){
-    wrap.innerHTML = '<div class="muted">Select an order to inspect its billing and service status.</div>';
+    wrap.innerHTML = '<div class="muted">Select an order to inspect service details, billing, and quick actions.</div>';
     return;
   }
   const route = routeForOrder(order);
@@ -2100,8 +2100,6 @@ function renderOrderInspector(orderId){
   const paid = orderAmountPaid(order);
   const bal = orderBalanceDue(order);
   const start = serviceStartForOrder(order) || '—';
-  const stripeCust = order?.stripe_customer_id || '—';
-  const stripeSub = order?.stripe_subscription_id || '—';
   const hold = shouldHaltService(order);
   const holdManual = order?.service_hold === true || String(order?.service_hold||'').toLowerCase()==='true';
   wrap.innerHTML = `
@@ -2112,47 +2110,39 @@ function renderOrderInspector(orderId){
       </div>
       ${billingMonitorBadge(order)}
     </div>
-    <div class="orders-inspector-grid">
+    <div class="inspector-stack">
       <div class="card inner">
-        <div class="card-title-sm">Operations</div>
-        <div class="kv"><span>Stage</span><b>${escapeHtml(stageLabelForOrder(order))}</b></div>
+        <div class="card-title-sm">Service</div>
+        <div class="kv"><span>Ops stage</span><b>${escapeHtml(stageLabelForOrder(order))}</b></div>
         <div class="kv"><span>Route</span><b>${escapeHtml(route?.name || 'Unassigned')}</b></div>
-        <div class="kv"><span>Service start</span><b>${escapeHtml(start)}</b></div>
+        <div class="kv"><span>Start date</span><b>${escapeHtml(start)}</b></div>
         <div class="kv"><span>Cadence</span><b>${escapeHtml(order.cadence || route?.cadence || '—')}</b></div>
         <div class="kv"><span>Services</span><b>${escapeHtml(servicesLabel(order) || '—')}</b></div>
       </div>
       <div class="card inner">
         <div class="card-title-sm">Billing</div>
-        <div class="kv"><span>Base monthly</span><b>${escapeHtml(fmtMoney(orderBaseAmount(order)))}</b></div>
-        <div class="kv"><span>Discount</span><b>${escapeHtml(fmtMoney(orderDiscountAmount(order)))}</b></div>
         <div class="kv"><span>Net monthly</span><b>${escapeHtml(fmtMoney(total))}</b></div>
-        <div class="kv"><span>Discount code</span><b>${escapeHtml(String(order.discount_code || '—'))}</b></div>
         <div class="kv"><span>Paid</span><b>${escapeHtml(fmtMoney(paid))}</b></div>
         <div class="kv"><span>Open balance</span><b>${escapeHtml(fmtMoney(bal))}</b></div>
-        <div class="kv"><span>Due date</span><b>${escapeHtml(String(order.payment_due_date || '').slice(0,10) || '—')}</b></div>
         <div class="kv"><span>Payment state</span><b>${escapeHtml(paymentDisplayLabel(order))}</b></div>
+        <div class="kv"><span>Due date</span><b>${escapeHtml(String(order.payment_due_date || '').slice(0,10) || '—')}</b></div>
       </div>
       <div class="card inner">
-        <div class="card-title-sm">Stripe monitoring</div>
-        <div class="kv"><span>Customer ID</span><b class="mono">${escapeHtml(stripeCust)}</b></div>
-        <div class="kv"><span>Subscription ID</span><b class="mono">${escapeHtml(stripeSub)}</b></div>
-        <div class="kv"><span>Stripe status</span><b>${escapeHtml(String(order.stripe_status || '—'))}</b></div>
-        <div class="kv"><span>Stripe payment</span><b>${escapeHtml(String(order.stripe_payment_status || '—'))}</b></div>
-        <div class="kv"><span>Service decision</span><b>${hold ? 'HALT SERVICE' : 'continue service'}</b></div>
+        <div class="card-title-sm">Notes</div>
+        <div class="muted">${order?.payment_notes ? escapeHtml(String(order.payment_notes)) : 'No notes yet.'}</div>
       </div>
-    </div>
-    <div class="card inner order-inspector-alert ${hold ? 'alert-warn' : 'alert-ok'}">
-      <div class="card-title-sm">Service hold</div>
-      <div class="muted">${escapeHtml(haltReason(order))}${holdManual ? ' (manual override)' : ''}</div>
-      <div class="actions" style="justify-content:flex-start; margin-top:12px;">
-        <button class="btn btn-mini outline" data-inspector-act="route">Open route</button>
-        <button class="btn btn-mini ghost" data-inspector-act="notes">Billing notes</button>
-        ${state.supportsServiceHold === false ? '<button class="btn btn-mini ghost" disabled title="Run the schema patch to enable service hold controls">Hold controls unavailable</button>' : (holdManual ? '<button class="btn btn-mini" data-inspector-act="resume">Resume service</button>' : '<button class="btn btn-mini" data-inspector-act="hold">Place hold</button>')}
-        <button class="btn btn-mini" data-inspector-act="mark-paid">Mark paid</button>
-        <button class="btn btn-mini" data-inspector-act="cancel">Cancel</button>
+      <div class="card inner order-inspector-alert ${hold ? 'alert-warn' : 'alert-ok'}">
+        <div class="card-title-sm">Decision</div>
+        <div class="muted">${escapeHtml(haltReason(order))}${holdManual ? ' (manual override)' : ''}</div>
+        <div class="actions" style="justify-content:flex-start; margin-top:12px; flex-wrap:wrap;">
+          <button class="btn btn-mini outline" data-inspector-act="route">Open route</button>
+          <button class="btn btn-mini ghost" data-inspector-act="notes">Edit notes</button>
+          ${state.supportsServiceHold === false ? '<button class="btn btn-mini ghost" disabled title="Run the schema patch to enable service hold controls">Hold unavailable</button>' : (holdManual ? '<button class="btn btn-mini" data-inspector-act="resume">Resume service</button>' : '<button class="btn btn-mini" data-inspector-act="hold">Place hold</button>')}
+          <button class="btn btn-mini" data-inspector-act="mark-paid">Mark paid</button>
+          <button class="btn btn-mini" data-inspector-act="cancel">Cancel</button>
+        </div>
       </div>
-    </div>
-    <div class="muted" style="margin-top:10px;">${order?.payment_notes ? escapeHtml(String(order.payment_notes)) : 'No billing notes yet.'}</div>`;
+    </div>`;
 
   wrap.querySelectorAll('button[data-inspector-act]').forEach(btn => {
     btn.addEventListener('click', async ()=>{
@@ -2209,74 +2199,73 @@ function renderOrders(){
     state.selectedOrderId = rows[0]?.id || null;
   }
 
-  const html = [];
-  html.push(`<table><thead><tr>
-    <th>Customer</th>
-    <th>Ops stage</th>
-    <th>Route / start</th>
-    <th>Billing</th>
-    <th>Stripe</th>
-    <th>Service</th>
-    <th>Balance</th>
-    <th>Actions</th>
-  </tr></thead><tbody>`);
+  if (!rows.length){
+    wrap.innerHTML = '<div class="order-card-empty">No orders match the current filters.</div>';
+    renderOrderInspector(null);
+    return;
+  }
 
+  const html = ['<div class="orders-list">'];
   for (const o of rows.slice(0, 400)){
     const route = routeForOrder(o);
     const total = orderContractAmount(o);
     const bal = orderBalanceDue(o);
-    const start = serviceStartForOrder(o);
-    const activeCls = String(state.selectedOrderId) === String(o.id) ? ' class="is-selected"' : '';
-    const quickAction = shouldHaltService(o) ? 'Review hold' : (billingMonitorState(o) === 'healthy' ? 'Healthy' : 'Needs review');
-    html.push(`<tr data-order-id="${escapeHtml(o.id)}"${activeCls}>
-      <td>
-        <div class="title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
-        <div class="sub">${escapeHtml(o.address||'')}</div>
-      </td>
-      <td>
-        <div>${escapeHtml(stageLabelForOrder(o))}</div>
-        <div class="sub">${escapeHtml(servicesLabel(o) || '—')}</div>
-      </td>
-      <td>
-        <div>${escapeHtml(route?.name || 'Unassigned')}</div>
-        <div class="sub">${escapeHtml(start || 'No start date')}</div>
-      </td>
-      <td>
-        <div class="payment-cell">
+    const start = serviceStartForOrder(o) || 'No start date';
+    const isSelected = String(state.selectedOrderId) === String(o.id);
+    const billing = billingMonitorState(o);
+    const serviceDecision = shouldHaltService(o) ? 'Hold service' : 'Continue service';
+    html.push(`
+      <article class="order-card${isSelected ? ' is-selected' : ''}" data-order-id="${escapeHtml(o.id)}">
+        <div class="order-card-top">
+          <div>
+            <div class="order-card-title">${escapeHtml(o.biz_name||o.business_name||o.contact_name||'')}</div>
+            <div class="order-card-address">${escapeHtml(o.address||'')}</div>
+          </div>
           ${billingMonitorBadge(o)}
-          <div class="sub">${escapeHtml(paymentDisplayLabel(o))}</div>
         </div>
-      </td>
-      <td>
-        <div class="sub mono">${escapeHtml(o?.stripe_subscription_id ? String(o.stripe_subscription_id).slice(0,18)+'…' : 'No subscription')}</div>
-        <div class="sub">${escapeHtml(String(o?.stripe_payment_status || o?.stripe_status || '—'))}</div>
-      </td>
-      <td>
-        <div class="service-flag ${shouldHaltService(o) ? 'stop' : 'go'}">${shouldHaltService(o) ? 'HALT' : 'GO'}</div>
-        <div class="sub">${escapeHtml(haltReason(o))}</div>
-      </td>
-      <td>
-        <div>${escapeHtml(fmtMoney(bal))}</div>
-        <div class="sub">of ${escapeHtml(fmtMoney(total))}</div>
-        <div class="sub">${escapeHtml(orderPriceSnapshotLabel(o) || '—')}</div>
-      </td>
-      <td>
-        <div class="actions order-actions">
-          <button class="btn btn-mini outline" data-act="inspect">Inspect</button>
-          <button class="btn btn-mini ghost" data-act="route">Open route</button>
-          <button class="btn btn-mini" data-act="cancel">Cancel</button>
+        <div class="order-card-meta">
+          <div class="order-meta">
+            <div class="order-meta-label">Service</div>
+            <div class="order-meta-value">${escapeHtml(servicesLabel(o) || '—')}</div>
+            <div class="order-meta-sub">${escapeHtml(String(o.cadence || route?.cadence || '—'))}</div>
+          </div>
+          <div class="order-meta">
+            <div class="order-meta-label">Route / start</div>
+            <div class="order-meta-value">${escapeHtml(route?.name || 'Unassigned')}</div>
+            <div class="order-meta-sub">${escapeHtml(start)}</div>
+          </div>
+          <div class="order-meta">
+            <div class="order-meta-label">Billing</div>
+            <div class="order-meta-value">${escapeHtml(billingMonitorLabel(o))}</div>
+            <div class="order-meta-sub">${escapeHtml(paymentDisplayLabel(o))}</div>
+          </div>
+          <div class="order-meta">
+            <div class="order-meta-label">Balance</div>
+            <div class="order-meta-value">${escapeHtml(fmtMoney(bal))}</div>
+            <div class="order-meta-sub">${escapeHtml(fmtMoney(total))} monthly</div>
+          </div>
         </div>
-        <div class="sub" style="margin-top:6px;">${escapeHtml(quickAction)}</div>
-      </td>
-    </tr>`);
+        <div class="order-card-bottom">
+          <div class="badges">
+            <span class="badge">${escapeHtml(stageLabelForOrder(o))}</span>
+            <span class="badge ${shouldHaltService(o) ? 'warn' : 'ok'}">${escapeHtml(serviceDecision)}</span>
+            ${billing === 'cancelled' ? '<span class="badge warn">cancelled</span>' : ''}
+          </div>
+          <div class="order-card-actions">
+            <button class="btn btn-mini outline" data-act="inspect">Inspect</button>
+            <button class="btn btn-mini ghost" data-act="route">Open route</button>
+            <button class="btn btn-mini" data-act="cancel">Cancel</button>
+          </div>
+        </div>
+      </article>`);
   }
-  html.push(`</tbody></table>`);
+  html.push('</div>');
   wrap.innerHTML = html.join('');
 
-  wrap.querySelectorAll('tr[data-order-id]').forEach(tr=>{
-    tr.addEventListener('click', (e)=>{
+  wrap.querySelectorAll('[data-order-id]').forEach(card => {
+    card.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
-      state.selectedOrderId = tr.dataset.orderId;
+      state.selectedOrderId = card.dataset.orderId;
       renderOrders();
     });
   });
@@ -2284,8 +2273,8 @@ function renderOrders(){
   wrap.querySelectorAll('button[data-act]').forEach(btn=>{
     btn.addEventListener('click', async (e)=>{
       e.stopPropagation();
-      const tr = btn.closest('tr');
-      const orderId = tr?.dataset.orderId;
+      const card = btn.closest('[data-order-id]');
+      const orderId = card?.dataset.orderId;
       if (!orderId) return;
       state.selectedOrderId = orderId;
       const act = btn.dataset.act;
