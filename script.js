@@ -1184,58 +1184,60 @@ async function autoAssignCurrentWeek(){
 
 /* ========= Home ========= */
 function renderHome(){
-  const orderById = new Map((state.orders||[]).map(o => [o.id, o]));
+  const orders = (state.orders || []).slice();
+  const routes = (state.routes || []).slice();
+  const assignments = (state.assignments || []).slice();
   const opsById = new Map((state.operators||[]).map(o => [o.id, o]));
 
-  // ROUTE-FIRST KPIs (based on active routes)
-  const activeRoutes = (state.routes||[]).filter(r => String(r.status||'').toLowerCase() === 'active');
+  const activeOrders = orders.filter(o => !['cancelled','archived'].includes(billingMonitorState(o)));
+  const needsAssignment = activeOrders.filter(o => {
+    const stage = stageLabelForOrder(o);
+    const bill = billingMonitorState(o);
+    return !o.route_id && bill === 'healthy' && (stage === 'deposited' || stage === 'on route' || stage === 'route active');
+  });
+  const billingFlags = activeOrders.filter(o => ['attention','needs_invoice','past_due','halted'].includes(billingMonitorState(o)));
+  const weekAssignments = assignments.filter(a => {
+    const d = parseISO(a.service_date);
+    return d && d >= state.weekStart && d < addDays(state.weekStart, 7);
+  });
 
-  let gross = 0;
-  let payouts = 0;
-  let jobs = 0;
-  const unique = new Set();
+  $('kpiActiveCustomers').textContent = String(activeOrders.length);
+  $('kpiNeedsAssignment').textContent = String(needsAssignment.length);
+  $('kpiScheduledThisWeek').textContent = String(weekAssignments.length);
+  $('kpiBillingFlags').textContent = String(billingFlags.length);
 
-  for (const r of activeRoutes){
-    const routeOrders = (state.orders||[]).filter(o => o.route_id === r.id);
-    for (const ord of routeOrders){
-      unique.add(ord.id);
-      jobs += 1;
-      const amt = Number(ord.monthly_total || ord.due_today || 0);
-      gross += amt;
+  attachKpiHover($('kpiActiveCustomers')?.closest('.kpi'), `${routes.filter(r => String(r.status||'').toLowerCase()==='active').length} active routes • ${orders.length} total orders loaded`);
+  attachKpiHover($('kpiNeedsAssignment')?.closest('.kpi'), `Healthy deposited orders not yet linked to a route`);
+  attachKpiHover($('kpiScheduledThisWeek')?.closest('.kpi'), `${new Set(weekAssignments.map(a => a.order_id)).size} unique customers on the board`);
+  attachKpiHover($('kpiBillingFlags')?.closest('.kpi'), `${billingFlags.filter(o => billingMonitorState(o)==='past_due').length} past due • ${billingFlags.filter(o => billingMonitorState(o)==='attention').length} setup issues`);
 
-      const op = r.operator_id ? (opsById.get(r.operator_id) || null) : null;
-      const rate = (op ? payoutToPercent(op.payout_rate) : 30) / 100;
-      payouts += amt * rate;
-    }
-  }
+  const upcomingStarts = activeOrders
+    .map(o => ({ order: o, start: serviceStartForOrder(o) }))
+    .filter(x => x.start)
+    .map(x => ({ ...x, date: parseISO(x.start) }))
+    .filter(x => x.date)
+    .sort((a,b) => a.date - b.date);
 
-  const profit = Math.max(0, gross - payouts);
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const next7 = upcomingStarts.filter(x => x.date >= today && x.date <= addDays(today, 7));
+  const halted = activeOrders.filter(o => shouldHaltService(o));
+  const routesMissingOperator = routes.filter(r => !r.operator_id && String(r.status||'').toLowerCase() !== 'archived');
 
-  $('kpiGross').textContent = fmtMoney(gross);
-  $('kpiProfit').textContent = fmtMoney(profit);
-  $('kpiJobs').textContent = String(jobs);
-  $('kpiPayouts').textContent = fmtMoney(payouts);
+  renderHomePriorityList({
+    needsAssignment,
+    billingFlags,
+    next7,
+    halted,
+    routesMissingOperator
+  });
+  renderHomeUpcomingStarts(upcomingStarts);
+  renderHomeRouteReadiness(routes, opsById);
+  renderHomeWeekSnapshot({ activeOrders, weekAssignments, upcomingStarts, needsAssignment, billingFlags, opsById });
 
-  attachKpiHover($('kpiGross')?.closest('.kpi'), `Profit: ${fmtMoney(profit)}  •  Payouts: ${fmtMoney(payouts)}`);
-  attachKpiHover($('kpiProfit')?.closest('.kpi'), `Gross: ${fmtMoney(gross)}  •  Payouts: ${fmtMoney(payouts)}`);
-  attachKpiHover($('kpiJobs')?.closest('.kpi'), `Active routes: ${activeRoutes.length}  •  Unique clients: ${unique.size}`);
-
-  // Soonest available (based on active-route load per weekday)
-  renderNextAvailable();
-
-  // Home orders inbox (grouped)
-  renderHomeOrdersInbox();
-
-  // Workload visual (active routes vs total orders)
-  const fill = $('workloadFill');
-  const sub = $('workloadSub');
-  if (fill && sub){
-    const total = (state.orders||[]).length || 0;
-    const activeStops = jobs;
-    const pct = total ? Math.min(100, Math.round((activeStops / total) * 100)) : 0;
-    fill.style.width = pct + '%';
-    sub.textContent = `${activeStops} stops on active routes • ${total} total intake orders`;
-  }
+  document.querySelectorAll('.home-nav-btn').forEach(btn => {
+    btn.onclick = () => switchView(btn.dataset.view);
+  });
 }
 
 function normalizeCadence(c){
@@ -1262,6 +1264,148 @@ function ageBucket(days){
   if (days <= 14) return '8–14d';
   if (days <= 30) return '15–30d';
   return '31+d';
+}
+
+function renderHomePriorityList({ needsAssignment, billingFlags, next7, halted, routesMissingOperator }){
+  const wrap = $('homePriorityList');
+  if (!wrap) return;
+  const items = [
+    {
+      title: needsAssignment.length ? `${needsAssignment.length} order${needsAssignment.length===1?'':'s'} need route assignment` : 'No healthy orders waiting on assignment',
+      sub: needsAssignment.length ? 'Move these from paid intake into a route before they go stale.' : 'Healthy paid orders are already attached to a route.',
+      tone: needsAssignment.length ? 'brand' : 'ok'
+    },
+    {
+      title: billingFlags.length ? `${billingFlags.length} billing issue${billingFlags.length===1?'':'s'} need review` : 'Billing looks clear',
+      sub: billingFlags.length ? 'Focus on past-due, needs-invoice, or setup issues before service day.' : 'No known billing blockers are loaded right now.',
+      tone: billingFlags.length ? 'warn' : 'ok'
+    },
+    {
+      title: next7.length ? `${next7.length} service start${next7.length===1?'':'s'} in the next 7 days` : 'No service starts in the next 7 days',
+      sub: next7.length ? 'Double-check route placement and operator coverage for these launches.' : 'Nothing new is scheduled to begin immediately.',
+      tone: next7.length ? 'blue' : 'ok'
+    },
+    {
+      title: halted.length || routesMissingOperator.length
+        ? `${halted.length} halted / ${routesMissingOperator.length} route${routesMissingOperator.length===1?'':'s'} without operator`
+        : 'No hold or staffing issues detected',
+      sub: halted.length || routesMissingOperator.length
+        ? 'Held accounts and unstaffed routes are the easiest things to miss before launch.'
+        : 'Service holds and operator staffing look stable from here.',
+      tone: (halted.length || routesMissingOperator.length) ? 'warn' : 'ok'
+    }
+  ];
+  wrap.innerHTML = items.map(item => `
+    <div class="row home-focus-row ${item.tone}">
+      <div class="left">
+        <div class="title">${escapeHtml(item.title)}</div>
+        <div class="sub">${escapeHtml(item.sub)}</div>
+      </div>
+      <div class="badges"><span class="badge ${item.tone}">${escapeHtml(item.tone === 'ok' ? 'clear' : 'action')}</span></div>
+    </div>`).join('');
+}
+
+function renderHomeUpcomingStarts(upcomingStarts){
+  const wrap = $('homeUpcomingList');
+  if (!wrap) return;
+  const rows = upcomingStarts.filter(x => x.date >= addDays(new Date(), -1)).slice(0, 6);
+  if (!rows.length){
+    wrap.innerHTML = '<div class="muted">No upcoming service starts are loaded yet.</div>';
+    return;
+  }
+  wrap.innerHTML = rows.map(({ order, start }) => {
+    const route = routeForOrder(order);
+    const startLabel = start || '—';
+    return `
+      <div class="row home-upcoming-row">
+        <div class="left">
+          <div class="title">${escapeHtml(order.biz_name || order.business_name || order.contact_name || 'Order')}</div>
+          <div class="sub">${escapeHtml(order.address || '')}</div>
+          <div class="sub">${escapeHtml(servicesLabel(order) || '—')}</div>
+        </div>
+        <div class="badges home-upcoming-badges">
+          <span class="badge blue">${escapeHtml(startLabel)}</span>
+          <span class="badge">${escapeHtml(route?.name || 'Unassigned')}</span>
+          ${billingMonitorBadge(order)}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderHomeRouteReadiness(routes, opsById){
+  const wrap = $('homeRouteReadiness');
+  if (!wrap) return;
+  const { chosen, used, capacity } = getNextAvailableInfo();
+  const activeOrDraft = routes.filter(r => {
+    const st = String(r.status || '').toLowerCase();
+    return st === 'active' || st === 'draft';
+  });
+  const ranked = activeOrDraft
+    .map(route => ({ route, readiness: computeRouteReadiness(route) }))
+    .sort((a,b) => {
+      const ap = a.readiness.pct;
+      const bp = b.readiness.pct;
+      if (ap !== bp) return bp - ap;
+      return String(a.route.name || '').localeCompare(String(b.route.name || ''));
+    })
+    .slice(0, 4);
+
+  const topHtml = ranked.length ? ranked.map(({ route, readiness }) => {
+    const operator = route.operator_id ? (opsById.get(route.operator_id) || null) : null;
+    const pct = Math.max(0, Math.min(100, readiness.pct || 0));
+    return `
+      <div class="home-route-item">
+        <div class="home-route-top">
+          <div>
+            <div class="title">${escapeHtml(route.name || 'Route')}</div>
+            <div class="sub">${escapeHtml(String(route.status || 'draft'))} • ${escapeHtml(route.service_start_date || 'No start date')}</div>
+          </div>
+          <span class="badge ${pct >= 100 ? 'ok' : 'brand'}">${pct}% ready</span>
+        </div>
+        <div class="progressLine"><span style="width:${pct}%"></span></div>
+        <div class="home-route-meta">
+          <span>${escapeHtml(`${readiness.assignedCans}/${readiness.targetCans || 0} cans`)}</span>
+          <span>${escapeHtml(operator?.name || 'No operator')}</span>
+        </div>
+        <div class="sub">${escapeHtml((readiness.reasons || []).join(' • ') || 'No readiness notes')}</div>
+      </div>`;
+  }).join('') : '<div class="muted">No active or draft routes yet.</div>';
+
+  wrap.innerHTML = `
+    <div class="home-next-open">
+      <div class="workload-title">Next open service day</div>
+      <div class="kpi-value">${escapeHtml(chosen?.iso || 'No openings')}</div>
+      <div class="kpi-sub">${escapeHtml(chosen ? `${dayName(chosen.dow)} capacity: ${used}/${capacity} stops` : `Active routes are at capacity`)}</div>
+    </div>
+    <div class="divider"></div>
+    <div class="home-route-stack">${topHtml}</div>`;
+}
+
+function renderHomeWeekSnapshot({ activeOrders, weekAssignments, upcomingStarts, needsAssignment, billingFlags, opsById }){
+  const wrap = $('homeWeekSnapshot');
+  if (!wrap) return;
+  const uniqueWeekCustomers = new Set(weekAssignments.map(a => a.order_id)).size;
+  let projectedPayout = 0;
+  for (const a of weekAssignments){
+    const ord = (state.orders||[]).find(o => String(o.id) === String(a.order_id));
+    if (!ord) continue;
+    const route = routeForOrder(ord);
+    const op = route?.operator_id ? (opsById.get(route.operator_id) || null) : null;
+    const rate = (op ? payoutToPercent(op.payout_rate) : 30) / 100;
+    projectedPayout += orderContractAmount(ord) * rate;
+  }
+  const startsThisWeek = upcomingStarts.filter(x => x.date >= state.weekStart && x.date < addDays(state.weekStart, 7)).length;
+  wrap.innerHTML = `
+    <div class="home-stat-grid">
+      <div class="card inner home-stat-card"><div class="workload-title">Active customers</div><div class="card-title">${activeOrders.length}</div><div class="card-sub">still in play</div></div>
+      <div class="card inner home-stat-card"><div class="workload-title">Unique stops</div><div class="card-title">${uniqueWeekCustomers}</div><div class="card-sub">scheduled this week</div></div>
+      <div class="card inner home-stat-card"><div class="workload-title">Starts this week</div><div class="card-title">${startsThisWeek}</div><div class="card-sub">new launches</div></div>
+      <div class="card inner home-stat-card"><div class="workload-title">Projected payout</div><div class="card-title">${escapeHtml(fmtMoney(projectedPayout))}</div><div class="card-sub">based on scheduled stops</div></div>
+    </div>
+    <div class="divider"></div>
+    <div class="kv"><span>Needs assignment</span><b>${needsAssignment.length}</b></div>
+    <div class="kv"><span>Billing flags</span><b>${billingFlags.length}</b></div>
+    <div class="kv"><span>Week of</span><b>${escapeHtml(toISODate(state.weekStart))}</b></div>`;
 }
 
 function renderHomeOrdersInbox(){
@@ -1395,24 +1539,17 @@ function renderHomeOrdersInbox(){
     });
   });
 }
-function renderNextAvailable(){
-  const el = $('nextAvailable');
-  const sub = $('nextAvailableSub');
-  if (!el) return;
-
-  // Heuristic: total stops per weekday capacity.
+function getNextAvailableInfo(){
   const DAILY_STOP_CAPACITY = 10;
   const LOOKAHEAD_DAYS = 30;
+  const today = new Date();
+  today.setHours(0,0,0,0);
 
-  const today = new Date(); today.setHours(0,0,0,0);
-
-  // Count stops per weekday from active routes (Mon–Fri)
   const activeRoutes = (state.routes||[]).filter(r => String(r.status||'').toLowerCase() === 'active');
   const weekdayStops = { 1:0, 2:0, 3:0, 4:0, 5:0 };
   for (const r of activeRoutes){
     const day = normalizeDay(r.service_day);
-    if (day == null) continue;
-    if (day === 0 || day === 6) continue;
+    if (day == null || day === 0 || day === 6) continue;
     const stops = (state.orders||[]).filter(o => o.route_id === r.id).length;
     weekdayStops[day] = (weekdayStops[day]||0) + stops;
   }
@@ -1428,15 +1565,21 @@ function renderNextAvailable(){
       break;
     }
   }
+  return { chosen, used: chosen?.used ?? DAILY_STOP_CAPACITY, capacity: DAILY_STOP_CAPACITY, lookaheadDays: LOOKAHEAD_DAYS };
+}
 
+function renderNextAvailable(){
+  const el = $('nextAvailable');
+  const sub = $('nextAvailableSub');
+  if (!el) return;
+  const { chosen, used, capacity, lookaheadDays } = getNextAvailableInfo();
   if (!chosen){
     el.textContent = 'No openings';
-    if (sub) sub.textContent = `Active routes are at capacity (≈${DAILY_STOP_CAPACITY} stops/day) for the next ${LOOKAHEAD_DAYS} days`;
+    if (sub) sub.textContent = `Active routes are at capacity (≈${capacity} stops/day) for the next ${lookaheadDays} days`;
     return;
   }
-
   el.textContent = chosen.iso;
-  if (sub) sub.textContent = `${dayName(chosen.dow)} capacity: ${chosen.used}/${DAILY_STOP_CAPACITY} stops • Based on active routes`;
+  if (sub) sub.textContent = `${dayName(chosen.dow)} capacity: ${used}/${capacity} stops • Based on active routes`;
 }
 
 

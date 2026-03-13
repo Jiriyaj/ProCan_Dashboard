@@ -189,9 +189,12 @@ input:focus, select:focus{border-color:rgba(40,199,255,.55); box-shadow:0 0 0 4p
 .grid.kpis{grid-template-columns: repeat(4, minmax(0,1fr))}
 /* Home main + sidebar layout */
 .home-grid{grid-template-columns: minmax(0, 3fr) 320px; align-items:start}
+.home-command-grid{grid-template-columns:minmax(0,1.6fr) minmax(320px,.9fr); align-items:start}
+.home-main-stack,.home-side-stack{display:flex; flex-direction:column; gap:16px}
 /* On typical laptops, stacking the sidebar keeps the intake table readable (no squished columns) */
 @media (max-width: 1320px){
   .home-grid{grid-template-columns: 1fr; }
+  .home-command-grid{grid-template-columns:1fr;}
 }
 @media (max-width: 1100px){
   .app{grid-template-columns: 90px 1fr}
@@ -199,6 +202,7 @@ input:focus, select:focus{border-color:rgba(40,199,255,.55); box-shadow:0 0 0 4p
   .nav-item{font-size:12px}
   .grid.kpis{grid-template-columns: repeat(2, minmax(0,1fr))}
   .home-grid{grid-template-columns: 1fr}
+  .home-command-grid{grid-template-columns:1fr}
 }
 @media (max-width: 720px){
   .app{grid-template-columns: 1fr}
@@ -388,6 +392,7 @@ input:focus, select:focus{border-color:rgba(40,199,255,.55); box-shadow:0 0 0 4p
 /* (home-grid is defined near the top; this section only tweaks spacing at this breakpoint) */
 @media (max-width: 1100px){
   .home-grid{ grid-template-columns: 1fr; }
+  .home-command-grid{ grid-template-columns: 1fr; }
 }
 
 .chips{
@@ -445,6 +450,28 @@ tr.clickable:hover td{
 .notice.warn{background:rgba(245, 158, 11, .12);border:1px solid rgba(245, 158, 11, .35);}
 .list{display:flex;flex-direction:column;gap:10px;}
 .sep{border:none;border-top:1px solid rgba(255,255,255,.08);margin:14px 0;}
+
+
+.home-focus-list,.home-upcoming-list{gap:12px;}
+.home-focus-row,.home-upcoming-row{align-items:flex-start;}
+.home-focus-row.ok,.home-upcoming-row{background:rgba(0,0,0,.18);}
+.home-focus-row.warn{border-color:rgba(255,176,32,.30); background:rgba(255,176,32,.07);}
+.home-focus-row.brand{border-color:rgba(255,176,32,.24); background:rgba(255,255,255,.03);}
+.home-focus-row.blue{border-color:rgba(40,199,255,.24); background:rgba(40,199,255,.05);}
+.home-upcoming-badges{justify-content:flex-end; min-width:220px;}
+.home-actions-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.home-actions-grid .btn{width:100%;}
+.home-route-stack{display:flex; flex-direction:column; gap:12px;}
+.home-route-item{border:1px solid var(--stroke); border-radius:16px; padding:12px; background:rgba(0,0,0,.18);}
+.home-route-top{display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:10px;}
+.home-route-meta{display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin:10px 0 6px; flex-wrap:wrap;}
+.home-next-open{padding-top:4px;}
+.home-stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+.home-stat-card{padding:12px;}
+@media (max-width: 720px){
+  .home-actions-grid,.home-stat-grid{grid-template-columns:1fr;}
+  .home-upcoming-badges{justify-content:flex-start; min-width:0;}
+}
 
 /* ===== Service confirmation (route runs) ===== */
 .runControls{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;flex-wrap:wrap;}

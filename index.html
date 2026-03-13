@@ -76,60 +76,81 @@
 <section class="view" id="homeView">
 <div class="grid kpis">
 <div class="card kpi">
-<div class="kpi-label">This week gross</div>
-<div class="kpi-value" id="kpiGross">$0</div>
-<div class="kpi-sub" id="kpiGrossSub">From scheduled work</div>
+<div class="kpi-label">Active customers</div>
+<div class="kpi-value" id="kpiActiveCustomers">0</div>
+<div class="kpi-sub">Accounts still in play for route work</div>
 </div>
 <div class="card kpi">
-<div class="kpi-label">This week profit</div>
-<div class="kpi-value" id="kpiProfit">$0</div>
-<div class="kpi-sub">Gross − operator payouts</div>
+<div class="kpi-label">Needs assignment</div>
+<div class="kpi-value" id="kpiNeedsAssignment">0</div>
+<div class="kpi-sub">Healthy orders not attached to a route yet</div>
 </div>
 <div class="card kpi">
-<div class="kpi-label">Jobs this week</div>
-<div class="kpi-value" id="kpiJobs">0</div>
-<div class="kpi-sub">Scheduled assignments</div>
+<div class="kpi-label">Scheduled this week</div>
+<div class="kpi-value" id="kpiScheduledThisWeek">0</div>
+<div class="kpi-sub">Stops on the board for the selected week</div>
 </div>
 <div class="card kpi">
-<div class="kpi-label">Operator payouts</div>
-<div class="kpi-value" id="kpiPayouts">$0</div>
-<div class="kpi-sub">Due end of pay period</div>
+<div class="kpi-label">Billing flags</div>
+<div class="kpi-value" id="kpiBillingFlags">0</div>
+<div class="kpi-sub">Orders that need review before service</div>
 </div>
 </div>
-<div class="grid home-grid">
+<div class="grid home-command-grid">
+<div class="home-main-stack">
 <div class="card">
 <div class="card-head">
 <div>
-<div class="card-title">Intake orders</div>
-<div class="card-sub">All orders from the Intake form (grouped by cadence • area • age to help build routes)</div>
+<div class="card-title">Attention required</div>
+<div class="card-sub">What needs action first for today and this week</div>
 </div>
-<div class="filters">
-<select id="homeCadence"></select>
-<select id="homeAge"></select>
-<input id="homeSearch" placeholder="Search business / address…" type="search"/>
-<button class="btn ghost" id="btnGoOrdersHome">Open full orders</button>
+<button class="btn ghost" id="btnGoOrdersHome">Open Orders</button>
 </div>
-</div>
-<div class="chips" id="homeGroupChips"></div>
-<div class="table" id="homeOrdersTable"></div>
+<div class="list home-focus-list" id="homePriorityList"></div>
 </div>
 <div class="card">
 <div class="card-head">
 <div>
-<div class="card-title">Soonest available</div>
-<div class="card-sub">Quick availability check for mid-sale</div>
+<div class="card-title">Upcoming service starts</div>
+<div class="card-sub">New work about to go live so nothing slips</div>
 </div>
-<button class="btn ghost" id="btnGoRoute2">Open route</button>
+<button class="btn ghost" id="btnGoRoute2">Open Routes</button>
 </div>
-<div class="divider"></div>
-<div class="workload">
-<div class="workload-title">Next open service day</div>
-<div class="kpi-value" id="nextAvailable">—</div>
-<div class="kpi-sub" id="nextAvailableSub">Based on current scheduled workload</div>
-<div class="divider"></div>
-<div class="workload-title">Weekly workload</div>
-<div class="workload-bar"><div class="workload-fill" id="workloadFill"></div></div>
-<div class="workload-sub" id="workloadSub">—</div>
+<div class="list home-upcoming-list" id="homeUpcomingList"></div>
+</div>
+</div>
+<div class="home-side-stack">
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Route readiness</div>
+<div class="card-sub">Capacity, staffing, and next opening at a glance</div>
+</div>
+</div>
+<div id="homeRouteReadiness"></div>
+</div>
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Week snapshot</div>
+<div class="card-sub">Fast operational summary for the selected week</div>
+</div>
+</div>
+<div id="homeWeekSnapshot"></div>
+</div>
+<div class="card">
+<div class="card-head">
+<div>
+<div class="card-title">Quick actions</div>
+<div class="card-sub">Jump straight into the screens that matter</div>
+</div>
+</div>
+<div class="home-actions-grid">
+<button class="btn ghost home-nav-btn" data-view="ordersView">Open Orders</button>
+<button class="btn ghost home-nav-btn" data-view="routesView">Open Routes</button>
+<button class="btn ghost home-nav-btn" data-view="routeRunsView">Route Runs</button>
+<button class="btn ghost home-nav-btn" data-view="operatorsView">Operators</button>
+</div>
 </div>
 </div>
 </div>
